@@ -211,8 +211,12 @@ def fetch_vlr(src: dict) -> list[dict]:
     resp = requests.get(src["url"], headers=HEADERS, timeout=30)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
+    matches = soup.select("a.match-item")
+    if not matches:  # Seite ganz ohne Matches = Aufbau geändert oder blockiert
+        raise ValueError("Keine Matches auf vlr.gg gefunden – Seitenaufbau geändert?")
+    print(f"   (vlr.gg: {len(matches)} Matches auf der Seite, davon VCT werden gefiltert)")
     items = []
-    for a in soup.select("a.match-item"):
+    for a in matches:
         ev_el = a.select_one(".match-item-event")
         series_el = a.select_one(".match-item-event-series")
         series = series_el.get_text(" ", strip=True) if series_el else ""
