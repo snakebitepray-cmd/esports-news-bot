@@ -317,6 +317,8 @@ def main(dry_run: bool = False) -> int:
                 # gleiche Story aus mehreren Quellen nur einmal (nicht bei Ergebnissen)
                 and (i.get("is_result") or norm_title(i["title"]) not in seen_titles)
                 and not any(k in i["title"].lower() for k in excluded)
+                and (not src.get("title_must_contain")
+                     or any(k in i["title"].lower() for k in src["title_must_contain"]))
             ]
             fresh.sort(key=lambda i: i["date"] or datetime.min.replace(tzinfo=timezone.utc))
             # Beim allerersten Lauf nur den neuesten Artikel posten (kein Spam)
