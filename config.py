@@ -69,10 +69,11 @@ GAMES = {
             {"type": "riot", "label": "🛠️ Update", "patch": True,
              "url": f"https://playvalorant.com/{RIOT_LOCALE}/news/game-updates/"},
             {"type": "rss", "label": TRANSFER_LABEL, "title_must_contain": TRANSFER_WORDS,
-             "url": google_news('(VCT OR Valorant) '
+             "url": google_news('(Valorant OR "VCT 2027" OR "VCT EMEA" OR "VCT Americas" OR "VCT Pacific" OR "VCT China") '
                                 '(roster OR signs OR joins OR transfer OR "parts ways" OR "free agent" OR benched) when:2d')},
             {"type": "rss", "label": "🏆 Esports",
-             "url": google_news('"Valorant Champions Tour" OR VCT OR "Valorant esports" when:2d')},
+             "url": google_news('"Valorant Champions Tour" OR "Valorant esports" OR "VCT 2027" OR "VCT EMEA" OR '
+                                '"VCT Americas" OR "VCT Pacific" OR "VCT China" OR "VCT Masters" when:2d')},
             # Match-Ergebnisse von vlr.gg, nur Events deren Name eines dieser Wörter enthält
             {"type": "vlr", "label": "📊 Result",
              "url": "https://www.vlr.gg/matches/results",
@@ -87,11 +88,19 @@ EXCLUDE_KEYWORDS = [
     "tier list", "how to", "guide", "best build", "counter", "codes", "crosshair",
     "betting", "casino", "gambling",
     "lpl financial", "stock", "wealth management", "investor", "nasdaq", "nyse",
+    " plc", "returns chart", "share price", "dividend", "earnings", "market cap",
     "how to watch", "watch live", "live stream", "livestream", "schedule and results", "stream schedule",
 ]
 
 # Titel mit weniger Wörtern werden ignoriert (z. B. Video-Seiten, die nur "VOD" heißen)
 MIN_TITLE_WORDS = 4
+
+# Artikel dieser Seiten werden ignoriert (Finanz-/Börsenseiten: "VCT", "LPL" usw. sind dort Aktienkürzel)
+EXCLUDE_SOURCES = [
+    "yahoo finance", "marketscreener", "investing.com", "marketbeat", "seeking alpha", "morningstar",
+    "zacks", "simply wall st", "stocktitan", "tipranks", "benzinga", "the motley fool", "finanzen.net",
+    "marketwatch", "proactive investors", "sharecast", "lse.co.uk",
+]
 
 # KI-Zusammenfassung mit Google Gemini (kostenlos). Wird nur genutzt, wenn das
 # GitHub-Secret GEMINI_API_KEY gesetzt ist. Die Modelle werden der Reihe nach probiert,

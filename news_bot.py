@@ -848,6 +848,7 @@ def main(dry_run: bool = False) -> int:
                 and (i.get("is_result") or norm_title(i["title"]) not in seen_titles)
                 and not any(k in i["title"].lower() for k in excluded)
                 and (i.get("is_result") or len(i["title"].split()) >= config.MIN_TITLE_WORDS)
+                and not any(x in (i.get("source") or "").lower() for x in config.EXCLUDE_SOURCES)
                 and (not src.get("title_must_contain") or has_word(i["title"], src["title_must_contain"]))
             ]
             fresh.sort(key=lambda i: i["date"] or datetime.min.replace(tzinfo=timezone.utc))
@@ -905,6 +906,7 @@ def test_ai() -> int:
                 items = [i for i in FETCHERS["rss"](src)
                          if len(i["title"].split()) >= config.MIN_TITLE_WORDS
                          and not any(k in i["title"].lower() for k in excluded)
+                         and not any(x in (i.get("source") or "").lower() for x in config.EXCLUDE_SOURCES)
                          and (not src.get("title_must_contain") or has_word(i["title"], src["title_must_contain"]))]
             except Exception as exc:
                 print(f"❌ {src['url'][:60]}: {exc}")
