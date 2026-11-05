@@ -508,5 +508,30 @@ def main(dry_run: bool = False) -> int:
     return 1 if errors and dry_run else 0
 
 
+def test_ai() -> int:
+    """Testet Zusammenfassung + Bild am neuesten Artikel jeder News-Quelle (postet nichts)."""
+    print(f"KI-Schlüssel gesetzt: {'ja' if os.getenv('GEMINI_API_KEY') else 'NEIN'}")
+    for game in config.GAMES.values():
+        for src in game["sources"]:
+            if src["type"] != "rss":
+                continue
+            try:
+                items = [i for i in FETCHERS["rss"](src) if len(i["title"].split()) >= config.MIN_TITLE_WORDS]
+            except Exception as exc:
+                print(f"❌ {src['url'][:60]}: {exc}")
+                continue
+            if not items:
+                continue
+            item = max(items, key=lambda i: i["date"] or datetime.min.replace(tzinfo=timezone.utc))
+            print(f"\n🧪 {game['name']} | {label_for(src, item)} | {item['title']}")
+            enrich(item)
+            print(f"   Link: {item['url']}")
+            print(f"   Bild: {item.get('image')}")
+            print(f"   Text: {item['summary'] or '-'}")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--test-ai" in sys.argv:
+        sys.exit(test_ai())
     sys.exit(main(dry_run="--dry-run" in sys.argv))
