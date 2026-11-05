@@ -625,6 +625,11 @@ def enrich(item: dict, game: dict | None = None, label: str = "") -> None:
         summary = lead if len(lead) >= 120 else (page["teaser"] or lead)
     if summary and norm_title(summary) != norm_title(item["title"]):
         item["summary"] = clean_text(summary, 900 if used_ai else config.SUMMARY_LENGTH + 50)
+    if not item["summary"]:  # Artikel nicht lesbar und keine andere Quelle -> kurzer Hinweis statt leer
+        source = item.get("source") or urlparse(item["url"] or "").netloc.removeprefix("www.")
+        kind = "Exclusive report" if re.match(r"^(sources?|report|exclusive)\s*:", item["title"], re.I) else "Report"
+        item["summary"] = (f"*{kind} by {source} – full details in the article.*" if source
+                           else "*Full details in the article.*")
     print(f"   📝 Zusammenfassung: {'KI' if used_ai else ('Text' if item['summary'] else 'keine')}"
           f" | Bild: {'ja' if item.get('image') else 'nein'}")
 
