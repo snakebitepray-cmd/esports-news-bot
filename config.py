@@ -123,6 +123,7 @@ TRUSTED_IMAGE_SITES = [
     "leagueoflegends.com", "playvalorant.com", "valorantesports.com", "vlr.gg", "liquipedia.net",
     "invenglobal.com", "egamersworld.com", "theesportsadvocate.com", "upcomer.com", "esportsinsider.com",
     "thespike.gg", "jaxon.gg", "win.gg", "oneesports.gg", "hltv.org", "redbull.com",
+    "ign.com", "ginx.tv", "pcgamer.com",
 ]
 
 SUMMARY_LENGTH = 500       # ungefähre Länge der Zusammenfassung in Zeichen

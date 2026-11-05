@@ -34,6 +34,7 @@ SEEN_LIMIT = 500
 def clean_text(raw: str, limit: int = 300) -> str:
     text = html.unescape(re.sub(r"<[^>]+>", " ", raw or ""))
     text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+([,.;:!?])(?=\s|$)", r"\1", text)  # "JioTV ," -> "JioTV,"
     return text if len(text) <= limit else text[: limit - 1].rsplit(" ", 1)[0] + "…"
 
 
@@ -454,6 +455,17 @@ PLAYER_PATTERNS = [
 ]
 
 
+def team_from_title(title: str) -> str | None:
+    """Notlösung ohne KI: neues Team aus Titeln wie '... join Bilibili Gaming for 2027' lesen."""
+    m = re.search(r"\b(?:join|joins|joined|to|with)\s+((?:[A-Z0-9][\w.&'-]*\s?){1,3}?)\s*"
+                  r"(?:for|ahead|as|in|after|through|until|on|,|$)", title)
+    if m:
+        team = m.group(1).strip()
+        if team.upper() not in {"LFL", "VCT", "LEC", "LCK", "LPL", "LCS", "THE"} and not team.isdigit():
+            return team
+    return None
+
+
 def player_from_title(title: str) -> str | None:
     """Notlösung ohne KI: Spielernamen aus typischen Transfer-Titeln lesen."""
     for pat in PLAYER_PATTERNS:
@@ -615,7 +627,8 @@ def enrich(item: dict, game: dict | None = None, label: str = "") -> None:
     if not item.get("image") and config.FALLBACK_IMAGES and game and game.get("liquipedia"):
         guess = player_from_title(item["title"])
         acronyms = [w for w in re.findall(r"\b[A-Z]{2,5}\b", item["title"]) if w not in {"VOD", "NA", "EU", "AI"}]
-        candidates = subjects + ([guess] if guess else []) + acronyms  # z. B. "LCK", "VCT"
+        team = team_from_title(item["title"])
+        candidates = subjects + [x for x in (guess, team) if x] + acronyms  # z. B. "LCK", "VCT"
         img, origin = find_image(list(dict.fromkeys(candidates)), game)  # doppelte raus
         print(f"   🖼️ Bild gesucht: {origin}")
         item["image"] = img
