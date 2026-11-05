@@ -35,6 +35,8 @@ jobs:
         env:
           LOL_WEBHOOK_URL: ${{ secrets.LOL_WEBHOOK_URL }}
           VALO_WEBHOOK_URL: ${{ secrets.VALO_WEBHOOK_URL }}
+          LOL_PATCH_WEBHOOK_URL: ${{ secrets.LOL_PATCH_WEBHOOK_URL }}
+          VALO_PATCH_WEBHOOK_URL: ${{ secrets.VALO_PATCH_WEBHOOK_URL }}
         run: python news_bot.py ${{ inputs.dry_run && '--dry-run' || '' }}
 
       - name: Gesehene Artikel speichern
