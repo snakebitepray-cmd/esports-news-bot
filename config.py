@@ -92,6 +92,14 @@ MIN_TITLE_WORDS = 4
 # GitHub-Secret GEMINI_API_KEY gesetzt ist. "gemini-flash-latest" = immer das aktuelle Flash-Modell.
 GEMINI_MODEL = "gemini-flash-latest"
 
+# Bilder aus Artikeln nur von diesen Seiten übernehmen (andere nutzen oft zufällige Stockfotos)
+TRUSTED_IMAGE_SITES = [
+    "sheepesports.com", "dexerto.com", "dotesports.com", "esports.gg", "lolesports.com",
+    "leagueoflegends.com", "playvalorant.com", "valorantesports.com", "vlr.gg", "liquipedia.net",
+    "invenglobal.com", "egamersworld.com", "theesportsadvocate.com", "upcomer.com", "esportsinsider.com",
+    "thespike.gg", "jaxon.gg", "win.gg", "oneesports.gg", "hltv.org", "redbull.com",
+]
+
 SUMMARY_LENGTH = 500       # ungefähre Länge der Zusammenfassung in Zeichen
 MAX_POSTS_PER_SOURCE = 5   # pro Durchlauf, damit der Kanal nicht geflutet wird
 MAX_AGE_HOURS = 72         # ältere Artikel werden ignoriert

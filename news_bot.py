@@ -367,7 +367,9 @@ def enrich(item: dict) -> None:
             item["url"] = url
     page = read_article(url) if url else {"teaser": "", "image": None, "text": ""}
 
-    if not item.get("image") and page["image"]:
+    site = urlparse(url or "").netloc.lower().removeprefix("www.")
+    trusted = any(site == d or site.endswith("." + d) for d in config.TRUSTED_IMAGE_SITES)
+    if not item.get("image") and page["image"] and trusted:
         item["image"] = page["image"]
 
     summary = ai_summary(item["title"], page["text"], item.get("source", ""))
