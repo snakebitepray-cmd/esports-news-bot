@@ -154,8 +154,14 @@ def score_line(a: str, sa, b: str, sb) -> str:
 LOLESPORTS_KEY = "0TvQnueqKa5mxJntVWt0w4LpLfEkrV1Ta8rQBb9Z"
 
 
-def fetch_lolesports(src: dict) -> list[dict]:
-    """Abgeschlossene Matches der gewählten Ligen von lolesports.com."""
+_lol_events_cache: dict = {}
+
+
+def lol_events(src: dict) -> list[dict]:
+    """Spielplan der gewählten Ligen von lolesports.com (einmal pro Lauf abgerufen)."""
+    key = tuple(src["leagues"])
+    if key in _lol_events_cache:
+        return _lol_events_cache[key]
     api = "https://esports-api.lolesports.com/persisted/gw"
     hdr = {**HEADERS, "x-api-key": LOLESPORTS_KEY}
     leagues = requests.get(f"{api}/getLeagues", params={"hl": "en-US"}, headers=hdr, timeout=30)
@@ -167,9 +173,14 @@ def fetch_lolesports(src: dict) -> list[dict]:
     sched = requests.get(f"{api}/getSchedule", headers=hdr, timeout=30,
                          params={"hl": "en-US", "leagueId": ",".join(lg["id"] for lg in wanted)})
     sched.raise_for_status()
+    _lol_events_cache[key] = sched.json()["data"]["schedule"]["events"]
+    return _lol_events_cache[key]
 
+
+def fetch_lolesports(src: dict) -> list[dict]:
+    """Abgeschlossene Matches der gewählten Ligen von lolesports.com."""
     items = []
-    for ev in sched.json()["data"]["schedule"]["events"]:
+    for ev in lol_events(src):
         match = ev.get("match") or {}
         teams = match.get("teams") or []
         if ev.get("state") != "completed" or len(teams) != 2:
@@ -648,6 +659,10 @@ def post_to_discord(webhook: str, game: dict, src: dict, item: dict):
     if item["date"]:
         embed["timestamp"] = item["date"].isoformat()
 
+    send_embed(webhook, embed)
+
+
+def send_embed(webhook: str, embed: dict) -> None:
     for _ in range(5):
         r = requests.post(webhook, json={"embeds": [embed]}, timeout=30)
         if r.status_code == 429:  # Rate-Limit: kurz warten und erneut versuchen
@@ -657,6 +672,146 @@ def post_to_discord(webhook: str, game: dict, src: dict, item: dict):
         time.sleep(1)
         return
     raise RuntimeError("Discord Rate-Limit dauerhaft überschritten")
+
+
+# ---------- Spielplan: Tagesübersicht & Erinnerungen ----------
+
+def upcoming_lol(src: dict) -> list[dict]:
+    out = []
+    for ev in lol_events(src):
+        match = ev.get("match") or {}
+        teams = match.get("teams") or []
+        if ev.get("state") not in ("unstarted", "inProgress") or len(teams) != 2:
+            continue
+        start = parse_date(ev.get("startTime"))
+        if not start:
+            continue
+        bo = (match.get("strategy") or {}).get("count")
+        out.append({
+            "id": f'lol-{match.get("id")}', "start": start,
+            "t1": teams[0].get("name") or "TBD", "t2": teams[1].get("name") or "TBD",
+            "event": (ev.get("league") or {}).get("name", ""), "stage": ev.get("blockName") or "",
+            "bestof": f"Bo{bo}" if bo else "", "url": None,
+        })
+    return out
+
+
+def parse_in(text: str) -> datetime | None:
+    """'2h 30m' (bis Matchbeginn) -> Zeitpunkt."""
+    units = {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
+    parts = re.findall(r"(\d+)\s*([wdhms])", text or "")
+    if not parts:
+        return None
+    return datetime.now(timezone.utc) + timedelta(seconds=sum(int(n) * units[u] for n, u in parts))
+
+
+def upcoming_vlr(src: dict) -> list[dict]:
+    from bs4 import BeautifulSoup
+    resp = requests.get(src["url"].replace("/matches/results", "/matches"), headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    out = []
+    for a in soup.select("a.match-item"):
+        ev_el = a.select_one(".match-item-event")
+        series_el = a.select_one(".match-item-event-series")
+        stage = series_el.get_text(" ", strip=True) if series_el else ""
+        if series_el:
+            series_el.extract()
+        event = ev_el.get_text(" ", strip=True) if ev_el else ""
+        if not any(k in event.lower() for k in src["events"]):
+            continue
+        names = [t.get_text(" ", strip=True) for t in a.select(".match-item-vs-team-name")]
+        eta = a.select_one(".ml-eta")
+        eta_text = eta.get_text(" ", strip=True) if eta else ""
+        if "ago" in eta_text.lower():  # schon gespielt
+            continue
+        start = parse_in(eta_text)
+        if len(names) != 2 or not start:
+            continue
+        out.append({
+            "id": "vlr-" + a["href"].split("/")[1], "start": start, "t1": names[0] or "TBD",
+            "t2": names[1] or "TBD", "event": event, "stage": stage, "bestof": "",
+            "url": urljoin(src["url"], a["href"]),
+        })
+    return out
+
+
+UPCOMING = {"lolesports": upcoming_lol, "vlr": upcoming_vlr}
+
+
+def local_now() -> datetime:
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo(config.TIMEZONE))
+
+
+def match_line(m: dict) -> str:
+    ts = int(m["start"].timestamp())
+    teams = f"**{m['t1']}** vs **{m['t2']}**"
+    if m["url"]:
+        teams = f"[{m['t1']} vs {m['t2']}]({m['url']})"
+    extra = " · ".join(x for x in (m["stage"], m["bestof"]) if x)
+    return f"<t:{ts}:t> {teams}" + (f" ({extra})" if extra else "")
+
+
+def handle_schedule(game: dict, game_state: dict, webhook: str | None, dry_run: bool) -> None:
+    """Tagesübersicht (einmal am Tag) und optional Erinnerungen kurz vor Matchbeginn."""
+    if not (config.DAILY_SCHEDULE or config.MATCH_REMINDERS):
+        return
+    matches = []
+    for src in game["sources"]:
+        if src["type"] in UPCOMING:
+            try:
+                matches += UPCOMING[src["type"]](src)
+            except Exception as exc:
+                print(f"❌ {game['name']} | Spielplan: {exc}")
+    now = datetime.now(timezone.utc)
+    matches.sort(key=lambda m: m["start"])
+    print(f"📅 {game['name']} | Spielplan: {len(matches)} kommende Matches gefunden")
+
+    # Tagesübersicht: einmal pro Tag ab DAILY_SCHEDULE_HOUR, Matches der nächsten 24 Stunden
+    today = local_now().date().isoformat()
+    due = local_now().hour >= config.DAILY_SCHEDULE_HOUR and game_state.get("schedule_day") != today
+    if config.DAILY_SCHEDULE and (due or dry_run):
+        window = [m for m in matches if now - timedelta(minutes=30) <= m["start"] <= now + timedelta(hours=24)]
+        if window:
+            groups: dict = {}
+            for m in window:
+                groups.setdefault(m["event"] or game["name"], []).append(match_line(m))
+            fields = [{"name": ev[:256], "value": "\n".join(lines)[:1024], "inline": False}
+                      for ev, lines in list(groups.items())[:25]]
+            embed = {"title": f"📅 Matches – {local_now().strftime('%A, %d %B')}"[:256], "color": game["color"],
+                     "author": {"name": f"🗓️ Schedule · {game['name']}"}, "fields": fields,
+                     "footer": {"text": "Times shown in your local time"}}
+            if dry_run:
+                print("   → Tagesübersicht (Vorschau):")
+                for f in fields:
+                    print(f"     {f['name']}: " + " | ".join(f["value"].splitlines()))
+            elif webhook:
+                send_embed(webhook, embed)
+        else:
+            print("   (keine Matches in den nächsten 24 Stunden – keine Tagesübersicht)")
+        if not dry_run and due:
+            game_state["schedule_day"] = today
+
+    # Erinnerungen kurz vor Matchbeginn
+    if config.MATCH_REMINDERS:
+        reminded = game_state.setdefault("reminded", [])
+        soon = [m for m in matches if now <= m["start"] <= now + timedelta(minutes=config.REMINDER_MINUTES)
+                and m["id"] not in reminded and "TBD" not in (m["t1"], m["t2"])]
+        for m in soon:
+            ts = int(m["start"].timestamp())
+            embed = {"title": f"{m['t1']} vs {m['t2']}"[:256], "color": game["color"],
+                     "author": {"name": f"🔴 Starting soon · {game['name']}"},
+                     "description": " · ".join(x for x in (m["event"], m["stage"], m["bestof"]) if x)
+                                    + f"\nStart: <t:{ts}:t> (<t:{ts}:R>)"}
+            if m["url"]:
+                embed["url"] = m["url"]
+            if dry_run:
+                print(f"   → Erinnerung: {m['t1']} vs {m['t2']}")
+            elif webhook:
+                send_embed(webhook, embed)
+                reminded.append(m["id"])
+        game_state["reminded"] = reminded[-200:]
 
 
 # ---------- Ablauf ----------
@@ -731,6 +886,7 @@ def main(dry_run: bool = False) -> int:
             ids = [i["id"] for i in items if i["id"]]
             game_state[src["url"]] = (ids + [s for s in seen if s not in ids])[:SEEN_LIMIT]
         game_state["titles"] = list(seen_titles)[-SEEN_LIMIT:]
+        handle_schedule(game, game_state, webhook, dry_run)
 
     if not dry_run:
         STATE_FILE.write_text(json.dumps(state, indent=1, ensure_ascii=False))

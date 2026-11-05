@@ -117,5 +117,12 @@ TRUSTED_IMAGE_SITES = [
 ]
 
 SUMMARY_LENGTH = 500       # ungefähre Länge der Zusammenfassung in Zeichen
+# Spielplan (in die Esports-Kanäle)
+TIMEZONE = "Europe/Berlin"
+DAILY_SCHEDULE = True          # jeden Tag eine Übersicht der Matches der nächsten 24 Stunden
+DAILY_SCHEDULE_HOUR = 10       # ab dieser Uhrzeit wird die Tagesübersicht gepostet
+MATCH_REMINDERS = False        # True = Erinnerung kurz vor jedem Match
+REMINDER_MINUTES = 35          # so viele Minuten vorher erinnern (Bot läuft alle 30 Minuten)
+
 MAX_POSTS_PER_SOURCE = 5   # pro Durchlauf, damit der Kanal nicht geflutet wird
 MAX_AGE_HOURS = 72         # ältere Artikel werden ignoriert
