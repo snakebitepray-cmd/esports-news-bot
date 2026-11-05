@@ -89,8 +89,14 @@ EXCLUDE_KEYWORDS = [
 MIN_TITLE_WORDS = 4
 
 # KI-Zusammenfassung mit Google Gemini (kostenlos). Wird nur genutzt, wenn das
-# GitHub-Secret GEMINI_API_KEY gesetzt ist. "gemini-flash-latest" = immer das aktuelle Flash-Modell.
-GEMINI_MODEL = "gemini-flash-latest"
+# GitHub-Secret GEMINI_API_KEY gesetzt ist. Die Modelle werden der Reihe nach probiert,
+# falls eines kein kostenloses Kontingent (mehr) hat.
+GEMINI_MODELS = [
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+]
 
 # Bilder aus Artikeln nur von diesen Seiten übernehmen (andere nutzen oft zufällige Stockfotos)
 TRUSTED_IMAGE_SITES = [

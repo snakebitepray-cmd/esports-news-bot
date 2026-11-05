@@ -338,23 +338,37 @@ def ai_summary(title: str, text: str, source: str) -> str | None:
                   f"If you cannot find reliable information, answer exactly NONE.\n\n"
                   f"Title: {title}\nSource: {source}")
         body = {"contents": [{"parts": [{"text": prompt}]}], "tools": [{"google_search": {}}]}
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent"
-    for attempt in range(3):
-        try:
-            r = requests.post(url, json=body, headers={"x-goog-api-key": key}, timeout=60)
-            if r.status_code in (429, 500, 503) and attempt < 2:
-                time.sleep(10 * (attempt + 1))
+    for model in config.GEMINI_MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        for attempt in range(2):
+            try:
+                r = requests.post(url, json=body, headers={"x-goog-api-key": key}, timeout=60)
+            except Exception as exc:
+                print(f"   (KI {model}: {exc})")
+                break
+            if r.ok:
+                try:
+                    parts = r.json()["candidates"][0]["content"]["parts"]
+                except (KeyError, IndexError, ValueError):
+                    print(f"   (KI {model}: leere Antwort)")
+                    break
+                out = " ".join(p.get("text", "") for p in parts).strip()
+                out = re.sub(r"\s*\[\d+(,\s*\d+)*\]", "", out).strip()  # Quellen-Nummern entfernen
+                if not out or out.upper().startswith("NONE"):
+                    return None
+                return out[:900]
+            try:
+                msg = r.json().get("error", {}).get("message", "")
+            except ValueError:
+                msg = r.text
+            msg = re.sub(r"\s+", " ", msg)[:200]
+            print(f"   (KI {model}: {r.status_code} {msg})")
+            # Kurz überlastet -> einmal warten; Kontingent leer/Modell fehlt -> nächstes Modell
+            if r.status_code in (500, 503) or (r.status_code == 429 and "limit: 0" not in msg
+                                               and "quota" not in msg.lower() and attempt == 0):
+                time.sleep(8)
                 continue
-            r.raise_for_status()
-            parts = r.json()["candidates"][0]["content"]["parts"]
-            out = " ".join(p.get("text", "") for p in parts).strip()
-            out = re.sub(r"\s*\[\d+(,\s*\d+)*\]", "", out).strip()  # Quellen-Nummern entfernen
-            if not out or out.upper().startswith("NONE"):
-                return None
-            return out[:900]
-        except Exception as exc:
-            print(f"   (KI-Zusammenfassung fehlgeschlagen: {exc})")
-            return None
+            break
     return None
 
 
