@@ -8,14 +8,18 @@ Typen:
 unterscheiden kann. Quellen kannst du einfach hinzufügen oder auskommentieren.
 """
 
-# Sprache der offiziellen Riot-Seiten (z. B. "de-de" oder "en-us")
-RIOT_LOCALE = "de-de"
+# Sprache der offiziellen Riot-Seiten (z. B. "en-us" oder "de-de")
+RIOT_LOCALE = "en-us"
 
 
 def google_news(query: str) -> str:
-    """Google-News-Suche als RSS-Feed (deutsche Ergebnisse)."""
+    """Google-News-Suche als RSS-Feed (englische Ergebnisse)."""
     from urllib.parse import quote
-    return f"https://news.google.com/rss/search?q={quote(query)}&hl=de&gl=DE&ceid=DE:de"
+    return f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
+
+
+# Ergebnisse als Spoiler verstecken (||3 - 1||)? True = ja
+SPOILER_RESULTS = False
 
 
 GAMES = {
@@ -29,9 +33,11 @@ GAMES = {
             {"type": "riot", "label": "🏆 Esports",
              "url": f"https://www.leagueoflegends.com/{RIOT_LOCALE}/news/esports/"},
             {"type": "rss", "label": "🏆 Esports",
-             "url": "https://dotesports.com/league-of-legends/feed"},
-            {"type": "rss", "label": "🏆 Esports",
-             "url": google_news('"LoL Esports" OR LEC OR "League of Legends Worlds" OR "Prime League" when:2d')},
+             "url": google_news('"LoL Esports" OR LEC OR LCK OR LPL OR "League of Legends Worlds" when:2d')},
+            # Match-Ergebnisse von lolesports.com. Ligen per Kürzel (Anfang des "slug").
+            {"type": "lolesports", "label": "📊 Result",
+             "url": "https://esports-api.lolesports.com/persisted/gw/getSchedule",
+             "leagues": ["worlds", "msi", "first_stand", "lec", "lck", "lpl", "lcs", "lta", "lcp", "cblol"]},
         ],
     },
     "valo": {
@@ -42,9 +48,11 @@ GAMES = {
             {"type": "riot", "label": "🛠️ Update",
              "url": f"https://playvalorant.com/{RIOT_LOCALE}/news/game-updates/"},
             {"type": "rss", "label": "🏆 Esports",
-             "url": "https://dotesports.com/valorant/feed"},
-            {"type": "rss", "label": "🏆 Esports",
-             "url": google_news('"Valorant Champions Tour" OR VCT OR "Valorant Esports" when:2d')},
+             "url": google_news('"Valorant Champions Tour" OR VCT OR "Valorant esports" when:2d')},
+            # Match-Ergebnisse von vlr.gg, nur Events deren Name eines dieser Wörter enthält
+            {"type": "vlr", "label": "📊 Result",
+             "url": "https://www.vlr.gg/matches/results",
+             "events": ["champions tour", "valorant champions", "valorant masters"]},
         ],
     },
 }

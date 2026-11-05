@@ -15,7 +15,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import feedparser
 import requests
@@ -94,6 +94,7 @@ def fetch_riot(url: str) -> list[dict]:
     data = json.loads(m.group(1))
 
     items, seen = [], set()
+    site = urlparse(url).netloc.removeprefix("www.")
 
     def link_of(o: dict):
         for cand in ((o.get("action") or {}).get("payload") or {}).get("url"), o.get("url"), o.get("link"):
@@ -108,7 +109,9 @@ def fetch_riot(url: str) -> list[dict]:
             title = o.get("title")
             date = o.get("publishedAt") or o.get("date")
             link = link_of(o)
-            if isinstance(title, str) and date and link and link not in seen:
+            # nur echte Artikel der Riot-Seite (keine Instagram-/YouTube-/X-Posts)
+            on_site = link and urlparse(link).netloc.removeprefix("www.").endswith(site)
+            if isinstance(title, str) and date and on_site and link not in seen:
                 seen.add(link)
                 media = o.get("media") or o.get("banner") or {}
                 desc = o.get("description")
@@ -133,7 +136,117 @@ def fetch_riot(url: str) -> list[dict]:
     return items
 
 
-FETCHERS = {"rss": fetch_rss, "riot": fetch_riot}
+def score_line(a: str, sa, b: str, sb) -> str:
+    score = f"{sa} - {sb}"
+    if config.SPOILER_RESULTS:
+        return f"{a} ||{score}|| {b}"
+    if str(sa).isdigit() and str(sb).isdigit():  # Sieger fett
+        if int(sa) > int(sb):
+            a = f"**{a}**"
+        elif int(sb) > int(sa):
+            b = f"**{b}**"
+    return f"{a} {score} {b}"
+
+
+# Öffentlicher Schlüssel, den auch die Website lolesports.com selbst verwendet
+LOLESPORTS_KEY = "0TvQnueqKa5mxJntVWt0w4LpLfEkrV1Ta8rQBb9Z"
+
+
+def fetch_lolesports(src: dict) -> list[dict]:
+    """Abgeschlossene Matches der gewählten Ligen von lolesports.com."""
+    api = "https://esports-api.lolesports.com/persisted/gw"
+    hdr = {**HEADERS, "x-api-key": LOLESPORTS_KEY}
+    leagues = requests.get(f"{api}/getLeagues", params={"hl": "en-US"}, headers=hdr, timeout=30)
+    leagues.raise_for_status()
+    wanted = [lg for lg in leagues.json()["data"]["leagues"]
+              if any(lg["slug"].startswith(s) for s in src["leagues"])]
+    if not wanted:
+        raise ValueError("Keine der gewünschten Ligen gefunden")
+    sched = requests.get(f"{api}/getSchedule", headers=hdr, timeout=30,
+                         params={"hl": "en-US", "leagueId": ",".join(lg["id"] for lg in wanted)})
+    sched.raise_for_status()
+
+    items = []
+    for ev in sched.json()["data"]["schedule"]["events"]:
+        match = ev.get("match") or {}
+        teams = match.get("teams") or []
+        if ev.get("state") != "completed" or len(teams) != 2:
+            continue
+        t1, t2 = teams
+        w1 = (t1.get("result") or {}).get("gameWins", 0)
+        w2 = (t2.get("result") or {}).get("gameWins", 0)
+        winner = t1 if w1 > w2 else t2
+        league = (ev.get("league") or {}).get("name", "")
+        info = [x for x in (league, ev.get("blockName")) if x]
+        if (match.get("strategy") or {}).get("count"):
+            info.append(f'Bo{match["strategy"]["count"]}')
+        items.append({
+            "id": f'lol-{match.get("id")}',
+            "title": f"{t1['name']} vs {t2['name']}",
+            "url": None,
+            "summary": score_line(t1.get("code") or t1["name"], w1, t2.get("code") or t2["name"], w2)
+                       + "\n" + " · ".join(info),
+            "image": None,
+            "thumbnail": None if config.SPOILER_RESULTS else winner.get("image"),
+            "date": parse_date(ev.get("startTime")),
+            "source": "lolesports.com",
+            "is_result": True,
+        })
+    return items
+
+
+def parse_ago(text: str) -> datetime | None:
+    """'2h 30m ago' -> Zeitpunkt."""
+    units = {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
+    parts = re.findall(r"(\d+)\s*([wdhms])", text or "")
+    if not parts:
+        return None
+    return datetime.now(timezone.utc) - timedelta(seconds=sum(int(n) * units[u] for n, u in parts))
+
+
+def fetch_vlr(src: dict) -> list[dict]:
+    """Abgeschlossene Matches von vlr.gg (nur gewünschte Events)."""
+    from bs4 import BeautifulSoup
+
+    resp = requests.get(src["url"], headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items = []
+    for a in soup.select("a.match-item"):
+        ev_el = a.select_one(".match-item-event")
+        series_el = a.select_one(".match-item-event-series")
+        series = series_el.get_text(" ", strip=True) if series_el else ""
+        if series_el:
+            series_el.extract()
+        event = ev_el.get_text(" ", strip=True) if ev_el else ""
+        if not any(k in event.lower() for k in src["events"]):
+            continue
+        teams = a.select(".match-item-vs-team")
+        if len(teams) != 2:
+            continue
+        names = [t.select_one(".match-item-vs-team-name").get_text(" ", strip=True) for t in teams]
+        scores = [t.select_one(".match-item-vs-team-score").get_text(strip=True) for t in teams]
+        eta = a.select_one(".ml-eta")
+        items.append({
+            "id": "vlr-" + a["href"].split("/")[1],
+            "title": f"{names[0]} vs {names[1]}",
+            "url": urljoin(src["url"], a["href"]),
+            "summary": score_line(names[0], scores[0], names[1], scores[1])
+                       + "\n" + " · ".join(x for x in (event, series) if x),
+            "image": None,
+            "date": parse_ago(eta.get_text(" ", strip=True)) if eta else None,
+            "source": "vlr.gg",
+            "is_result": True,
+        })
+    return items
+
+
+FETCHERS = {
+    "rss": lambda src: fetch_rss(src["url"]),
+    "riot": lambda src: fetch_riot(src["url"]),
+    "lolesports": fetch_lolesports,
+    "vlr": fetch_vlr,
+}
 
 
 # ---------- Discord ----------
@@ -141,15 +254,18 @@ FETCHERS = {"rss": fetch_rss, "riot": fetch_riot}
 def post_to_discord(webhook: str, game: dict, src: dict, item: dict):
     embed = {
         "title": item["title"][:256],
-        "url": item["url"],
         "color": game["color"],
         "author": {"name": f'{src["label"]} · {game["name"]}'},
         "footer": {"text": item["source"][:100] or "News"},
     }
     if item["summary"]:
         embed["description"] = item["summary"]
+    if item["url"]:
+        embed["url"] = item["url"]
     if item["image"]:
         embed["image"] = {"url": item["image"]}
+    if item.get("thumbnail"):
+        embed["thumbnail"] = {"url": item["thumbnail"]}
     if item["date"]:
         embed["timestamp"] = item["date"].isoformat()
 
@@ -184,7 +300,7 @@ def main(dry_run: bool = False) -> int:
             seen = game_state.setdefault(src["url"], [])
             first_run = not seen
             try:
-                items = FETCHERS[src["type"]](src["url"])
+                items = FETCHERS[src["type"]](src)
             except Exception as exc:
                 errors += 1
                 print(f"❌ {game['name']} | {src['url']}: {exc}")
@@ -194,7 +310,8 @@ def main(dry_run: bool = False) -> int:
             fresh = [
                 i for i in new
                 if (i["date"] is None or i["date"] >= cutoff)
-                and norm_title(i["title"]) not in seen_titles
+                # gleiche Story aus mehreren Quellen nur einmal (nicht bei Ergebnissen)
+                and (i.get("is_result") or norm_title(i["title"]) not in seen_titles)
                 and not any(k in i["title"].lower() for k in excluded)
             ]
             fresh.sort(key=lambda i: i["date"] or datetime.min.replace(tzinfo=timezone.utc))
@@ -205,7 +322,8 @@ def main(dry_run: bool = False) -> int:
 
             for item in to_post:
                 if dry_run:
-                    print(f"   → {item['title']}  ({item['url']})")
+                    extra = item["summary"].replace("\n", " | ") if item.get("is_result") else item["url"]
+                    print(f"   → {item['title']}  ({extra})")
                     continue
                 try:
                     post_to_discord(webhook, game, src, item)
@@ -213,7 +331,8 @@ def main(dry_run: bool = False) -> int:
                     errors += 1
                     print(f"❌ Posten fehlgeschlagen: {exc}")
                     break
-                seen_titles.add(norm_title(item["title"]))
+                if not item.get("is_result"):
+                    seen_titles.add(norm_title(item["title"]))
 
             # Alles Gefundene als gesehen markieren (auch Übersprungenes)
             ids = [i["id"] for i in items if i["id"]]
