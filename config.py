@@ -32,6 +32,10 @@ GAMES = {
              "url": f"https://www.leagueoflegends.com/{RIOT_LOCALE}/news/game-updates/"},
             {"type": "riot", "label": "🏆 Esports",
              "url": f"https://www.leagueoflegends.com/{RIOT_LOCALE}/news/esports/"},
+            # Spielerwechsel (steht VOR den allgemeinen News, damit sie das Transfer-Label bekommen)
+            {"type": "rss", "label": "🔄 Transfer",
+             "url": google_news('(LEC OR LCK OR LPL OR LCS OR "League of Legends" OR "LoL Esports") '
+                                '(roster OR signs OR joins OR transfer OR "parts ways" OR "free agent" OR benched) when:2d')},
             {"type": "rss", "label": "🏆 Esports",
              "url": google_news('"LoL Esports" OR LEC OR LCK OR LPL OR "League of Legends Worlds" when:2d')},
             # Match-Ergebnisse von lolesports.com. Ligen per Kürzel (Anfang des "slug").
@@ -47,6 +51,9 @@ GAMES = {
         "sources": [
             {"type": "riot", "label": "🛠️ Update",
              "url": f"https://playvalorant.com/{RIOT_LOCALE}/news/game-updates/"},
+            {"type": "rss", "label": "🔄 Transfer",
+             "url": google_news('(VCT OR Valorant) '
+                                '(roster OR signs OR joins OR transfer OR "parts ways" OR "free agent" OR benched) when:2d')},
             {"type": "rss", "label": "🏆 Esports",
              "url": google_news('"Valorant Champions Tour" OR VCT OR "Valorant esports" when:2d')},
             # Match-Ergebnisse von vlr.gg, nur Events deren Name eines dieser Wörter enthält
