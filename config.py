@@ -18,7 +18,10 @@ def google_news(query: str) -> str:
     return f"https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en"
 
 
-# Bei Transfer-Quellen muss eines dieser Wörter im TITEL stehen
+TRANSFER_LABEL = "🔄 Transfer"
+
+# Bei Transfer-Quellen muss eines dieser Wörter im TITEL stehen.
+# Esports-Artikel mit einem dieser Wörter im Titel bekommen ebenfalls das Transfer-Label.
 TRANSFER_WORDS = [
     "roster", "sign", "join", "transfer", "parts ways", "part ways", "free agent", "bench",
     "leave", "leaving", "depart", "contract", "acquire", "release", "retire", "promote", "replace",
@@ -39,7 +42,7 @@ GAMES = {
             {"type": "riot", "label": "🏆 Esports",
              "url": f"https://www.leagueoflegends.com/{RIOT_LOCALE}/news/esports/"},
             # Spielerwechsel (steht VOR den allgemeinen News, damit sie das Transfer-Label bekommen)
-            {"type": "rss", "label": "🔄 Transfer", "title_must_contain": TRANSFER_WORDS,
+            {"type": "rss", "label": TRANSFER_LABEL, "title_must_contain": TRANSFER_WORDS,
              "url": google_news('(LEC OR LCK OR LPL OR LCS OR "League of Legends" OR "LoL Esports") '
                                 '(roster OR signs OR joins OR transfer OR "parts ways" OR "free agent" OR benched) when:2d')},
             {"type": "rss", "label": "🏆 Esports",
@@ -57,7 +60,7 @@ GAMES = {
         "sources": [
             {"type": "riot", "label": "🛠️ Update",
              "url": f"https://playvalorant.com/{RIOT_LOCALE}/news/game-updates/"},
-            {"type": "rss", "label": "🔄 Transfer", "title_must_contain": TRANSFER_WORDS,
+            {"type": "rss", "label": TRANSFER_LABEL, "title_must_contain": TRANSFER_WORDS,
              "url": google_news('(VCT OR Valorant) '
                                 '(roster OR signs OR joins OR transfer OR "parts ways" OR "free agent" OR benched) when:2d')},
             {"type": "rss", "label": "🏆 Esports",

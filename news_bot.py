@@ -255,11 +255,19 @@ FETCHERS = {
 
 # ---------- Discord ----------
 
+def label_for(src: dict, item: dict) -> str:
+    """Esports-Artikel über Spielerwechsel bekommen das Transfer-Label."""
+    title = item["title"].lower()
+    if "Esports" in src["label"] and any(w in title for w in config.TRANSFER_WORDS):
+        return config.TRANSFER_LABEL
+    return src["label"]
+
+
 def post_to_discord(webhook: str, game: dict, src: dict, item: dict):
     embed = {
         "title": item["title"][:256],
         "color": game["color"],
-        "author": {"name": f'{src["label"]} · {game["name"]}'},
+        "author": {"name": f'{label_for(src, item)} · {game["name"]}'},
         "footer": {"text": item["source"][:100] or "News"},
     }
     if item["summary"]:
@@ -329,7 +337,7 @@ def main(dry_run: bool = False) -> int:
             for item in to_post:
                 if dry_run:
                     extra = item["summary"].replace("\n", " | ") if item.get("is_result") else item["url"]
-                    print(f"   → {item['title']}  ({extra})")
+                    print(f"   → [{label_for(src, item)}] {item['title']}  ({extra})")
                     continue
                 try:
                     post_to_discord(webhook, game, src, item)
