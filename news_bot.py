@@ -24,6 +24,8 @@ import config
 
 STATE_FILE = Path(__file__).with_name("state.json")
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; esports-news-discord-bot/1.0)"}
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
 SEEN_LIMIT = 500
 
 
@@ -255,6 +257,76 @@ FETCHERS = {
 
 # ---------- Discord ----------
 
+BOILERPLATE = ("cookie", "subscribe", "newsletter", "sign up", "advertisement", "all rights reserved",
+               "follow us", "read more", "click here", "affiliate", "we may earn", "image credit",
+               "javascript", "log in", "privacy policy")
+
+
+def article_lead(soup, limit: int) -> str:
+    """Die ersten inhaltlichen Absätze eines Artikels, auf ganze Sätze gekürzt."""
+    body = soup.find("article") or soup.find("main") or soup.body or soup
+    for junk in body.select("script, style, nav, aside, figure, figcaption, header, footer, form, button"):
+        junk.decompose()
+    paras = []
+    for p in body.find_all(["p", "li"]):
+        text = re.sub(r"\s+", " ", p.get_text(" ", strip=True))
+        if len(text) < 60 or any(b in text.lower() for b in BOILERPLATE) or text in paras:
+            continue
+        paras.append(text)
+        if sum(len(x) for x in paras) >= limit:
+            break
+    text = " ".join(paras)
+    if len(text) > limit:  # an Satzende abschneiden
+        cut = text[:limit]
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "), cut.rfind(".\""))
+        text = cut[: end + 1] if end > limit * 0.4 else cut.rsplit(" ", 1)[0] + "…"
+    return text
+
+
+def enrich(item: dict) -> None:
+    """Öffnet den echten Artikel und holt Kurzbeschreibung, Bild und direkten Link."""
+    from bs4 import BeautifulSoup
+
+    url = item["url"]
+    if "news.google.com" in url:
+        try:
+            from googlenewsdecoder import gnewsdecoder
+            res = gnewsdecoder(url, timeout=15)
+            if res.get("success", res.get("status")) and res.get("decoded_url"):
+                url = item["url"] = res["decoded_url"]
+        except Exception as exc:
+            print(f"   (Google-Link nicht auflösbar: {exc})")
+            return
+    if "news.google.com" in url:
+        return
+    try:
+        resp = requests.get(url, headers={**HEADERS, "User-Agent": BROWSER_UA}, timeout=15)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"   (Artikel nicht lesbar, poste nur Titel: {exc})")
+        return
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    def meta(*names):
+        for n in names:
+            tag = soup.find("meta", attrs={"property": n}) or soup.find("meta", attrs={"name": n})
+            if tag and tag.get("content", "").strip():
+                return tag["content"].strip()
+        return None
+
+    teaser = meta("og:description", "twitter:description", "description")
+    lead = article_lead(soup, config.SUMMARY_LENGTH)
+    # Bevorzugt die ersten Absätze des Artikels (enthalten die eigentlichen Fakten),
+    # sonst die Kurzbeschreibung der Seite
+    desc = lead if len(lead) >= 120 else (teaser or lead)
+    if desc and norm_title(desc) != norm_title(item["title"]):
+        item["summary"] = clean_text(desc, config.SUMMARY_LENGTH + 50)
+    if not item.get("image"):
+        img = meta("og:image", "twitter:image")
+        if img and img.startswith("http"):
+            item["image"] = img
+
+
 def label_for(src: dict, item: dict) -> str:
     """Esports-Artikel über Spielerwechsel bekommen das Transfer-Label."""
     title = item["title"].lower()
@@ -335,9 +407,13 @@ def main(dry_run: bool = False) -> int:
                   f"{len(items)} gefunden, {len(to_post)} neu")
 
             for item in to_post:
+                if not item.get("is_result"):
+                    enrich(item)
                 if dry_run:
                     extra = item["summary"].replace("\n", " | ") if item.get("is_result") else item["url"]
                     print(f"   → [{label_for(src, item)}] {item['title']}  ({extra})")
+                    if item["summary"] and not item.get("is_result"):
+                        print(f"     📝 {item['summary']}")
                     continue
                 try:
                     post_to_discord(webhook, game, src, item)

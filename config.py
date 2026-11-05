@@ -79,5 +79,6 @@ EXCLUDE_KEYWORDS = [
     "tier list", "how to", "guide", "best build", "counter", "codes", "crosshair",
 ]
 
+SUMMARY_LENGTH = 500       # ungefähre Länge der Zusammenfassung in Zeichen
 MAX_POSTS_PER_SOURCE = 5   # pro Durchlauf, damit der Kanal nicht geflutet wird
 MAX_AGE_HOURS = 72         # ältere Artikel werden ignoriert
