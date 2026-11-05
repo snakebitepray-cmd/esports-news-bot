@@ -283,28 +283,29 @@ def article_lead(soup, limit: int) -> str:
     return text
 
 
-def enrich(item: dict) -> None:
-    """Öffnet den echten Artikel und holt Kurzbeschreibung, Bild und direkten Link."""
-    from bs4 import BeautifulSoup
+def resolve_google(url: str) -> str | None:
+    """Wandelt einen Google-News-Link in den echten Artikel-Link um."""
+    try:
+        from googlenewsdecoder import gnewsdecoder
+        res = gnewsdecoder(url, timeout=15)
+        if res.get("success", res.get("status")) and res.get("decoded_url"):
+            return res["decoded_url"]
+        print(f"   (Google-Link nicht auflösbar: {res.get('message')})")
+    except Exception as exc:
+        print(f"   (Google-Link nicht auflösbar: {exc})")
+    return None
 
-    url = item["url"]
-    if "news.google.com" in url:
-        try:
-            from googlenewsdecoder import gnewsdecoder
-            res = gnewsdecoder(url, timeout=15)
-            if res.get("success", res.get("status")) and res.get("decoded_url"):
-                url = item["url"] = res["decoded_url"]
-        except Exception as exc:
-            print(f"   (Google-Link nicht auflösbar: {exc})")
-            return
-    if "news.google.com" in url:
-        return
+
+def read_article(url: str) -> dict:
+    """Artikel laden: Text, Kurzbeschreibung, Bild (leer, wenn die Seite nicht lesbar ist)."""
+    from bs4 import BeautifulSoup
+    empty = {"teaser": "", "image": None, "text": ""}
     try:
         resp = requests.get(url, headers={**HEADERS, "User-Agent": BROWSER_UA}, timeout=15)
         resp.raise_for_status()
     except Exception as exc:
-        print(f"   (Artikel nicht lesbar, poste nur Titel: {exc})")
-        return
+        print(f"   (Artikel nicht lesbar: {exc})")
+        return empty
     soup = BeautifulSoup(resp.text, "html.parser")
 
     def meta(*names):
@@ -314,17 +315,70 @@ def enrich(item: dict) -> None:
                 return tag["content"].strip()
         return None
 
-    teaser = meta("og:description", "twitter:description", "description")
-    lead = article_lead(soup, config.SUMMARY_LENGTH)
-    # Bevorzugt die ersten Absätze des Artikels (enthalten die eigentlichen Fakten),
-    # sonst die Kurzbeschreibung der Seite
-    desc = lead if len(lead) >= 120 else (teaser or lead)
-    if desc and norm_title(desc) != norm_title(item["title"]):
-        item["summary"] = clean_text(desc, config.SUMMARY_LENGTH + 50)
-    if not item.get("image"):
-        img = meta("og:image", "twitter:image")
-        if img and img.startswith("http"):
-            item["image"] = img
+    image = meta("og:image", "twitter:image")
+    return {
+        "teaser": meta("og:description", "twitter:description", "description") or "",
+        "image": image if image and image.startswith("http") else None,
+        "text": article_lead(soup, 6000),
+    }
+
+
+def ai_summary(title: str, text: str, source: str) -> str | None:
+    """Kurze Zusammenfassung mit Google Gemini (nur wenn GEMINI_API_KEY gesetzt ist)."""
+    key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        return None
+    rules = ("Write a concise summary for a Discord esports news channel: 2-3 short sentences in English, "
+             "only facts, include the key names/teams/numbers, no intro phrases like 'This article', "
+             "no markdown, no hashtags.")
+    if len(text) >= 200:
+        body = {"contents": [{"parts": [{"text": f"{rules}\n\nTitle: {title}\n\nArticle:\n{text[:6000]}"}]}]}
+    else:  # Artikel nicht lesbar -> Gemini sucht über Google nach der Meldung
+        prompt = (f"{rules}\nUse Google Search to find this news and summarize it. "
+                  f"If you cannot find reliable information, answer exactly NONE.\n\n"
+                  f"Title: {title}\nSource: {source}")
+        body = {"contents": [{"parts": [{"text": prompt}]}], "tools": [{"google_search": {}}]}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent"
+    for attempt in range(3):
+        try:
+            r = requests.post(url, json=body, headers={"x-goog-api-key": key}, timeout=60)
+            if r.status_code in (429, 500, 503) and attempt < 2:
+                time.sleep(10 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            parts = r.json()["candidates"][0]["content"]["parts"]
+            out = " ".join(p.get("text", "") for p in parts).strip()
+            out = re.sub(r"\s*\[\d+(,\s*\d+)*\]", "", out).strip()  # Quellen-Nummern entfernen
+            if not out or out.upper().startswith("NONE"):
+                return None
+            return out[:900]
+        except Exception as exc:
+            print(f"   (KI-Zusammenfassung fehlgeschlagen: {exc})")
+            return None
+    return None
+
+
+def enrich(item: dict) -> None:
+    """Holt Zusammenfassung, Bild und direkten Link zum Artikel."""
+    url = item["url"]
+    if "news.google.com" in url:
+        url = resolve_google(url)
+        if url:
+            item["url"] = url
+    page = read_article(url) if url else {"teaser": "", "image": None, "text": ""}
+
+    if not item.get("image") and page["image"]:
+        item["image"] = page["image"]
+
+    summary = ai_summary(item["title"], page["text"], item.get("source", ""))
+    used_ai = bool(summary)
+    if not summary:  # ohne KI: Artikelanfang bzw. Kurzbeschreibung
+        lead = page["text"][: config.SUMMARY_LENGTH + 200]
+        summary = lead if len(lead) >= 120 else (page["teaser"] or lead)
+    if summary and norm_title(summary) != norm_title(item["title"]):
+        item["summary"] = clean_text(summary, 900 if used_ai else config.SUMMARY_LENGTH + 50)
+    print(f"   📝 Zusammenfassung: {'KI' if used_ai else ('Text' if item['summary'] else 'keine')}"
+          f" | Bild: {'ja' if item.get('image') else 'nein'}")
 
 
 def label_for(src: dict, item: dict) -> str:

@@ -88,6 +88,10 @@ EXCLUDE_KEYWORDS = [
 # Titel mit weniger Wörtern werden ignoriert (z. B. Video-Seiten, die nur "VOD" heißen)
 MIN_TITLE_WORDS = 4
 
+# KI-Zusammenfassung mit Google Gemini (kostenlos). Wird nur genutzt, wenn das
+# GitHub-Secret GEMINI_API_KEY gesetzt ist. "gemini-flash-latest" = immer das aktuelle Flash-Modell.
+GEMINI_MODEL = "gemini-flash-latest"
+
 SUMMARY_LENGTH = 500       # ungefähre Länge der Zusammenfassung in Zeichen
 MAX_POSTS_PER_SOURCE = 5   # pro Durchlauf, damit der Kanal nicht geflutet wird
 MAX_AGE_HOURS = 72         # ältere Artikel werden ignoriert
