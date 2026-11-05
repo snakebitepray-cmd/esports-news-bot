@@ -9,6 +9,10 @@ on:
         description: "Test-Modus (nichts posten)"
         type: boolean
         default: false
+      test_ai:
+        description: "KI-Test (zeigt Zusammenfassungen im Log, postet nichts)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -38,10 +42,10 @@ jobs:
           LOL_PATCH_WEBHOOK_URL: ${{ secrets.LOL_PATCH_WEBHOOK_URL }}
           VALO_PATCH_WEBHOOK_URL: ${{ secrets.VALO_PATCH_WEBHOOK_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python news_bot.py ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: python news_bot.py ${{ inputs.dry_run && '--dry-run' || '' }} ${{ inputs.test_ai && '--test-ai' || '' }}
 
       - name: Gesehene Artikel speichern
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && !inputs.test_ai }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
