@@ -1,0 +1,46 @@
+name: Esports News
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # alle 30 Minuten
+  workflow_dispatch:          # manuell starten über "Run workflow"
+    inputs:
+      dry_run:
+        description: "Test-Modus (nichts posten)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: news
+  cancel-in-progress: false
+
+jobs:
+  news:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: News holen und posten
+        env:
+          LOL_WEBHOOK_URL: ${{ secrets.LOL_WEBHOOK_URL }}
+          VALO_WEBHOOK_URL: ${{ secrets.VALO_WEBHOOK_URL }}
+        run: python news_bot.py ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Gesehene Artikel speichern
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || (git commit -m "News-Status aktualisiert [skip ci]" && git push)
