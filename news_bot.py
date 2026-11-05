@@ -326,21 +326,21 @@ def read_article(url: str) -> dict:
 _last_ai_call = 0.0
 
 
-def ai_summary(title: str, text: str, source: str) -> str | None:
-    """Kurze Zusammenfassung mit Google Gemini (nur wenn GEMINI_API_KEY gesetzt ist)."""
+def ai_summary(title: str, text: str, source: str) -> tuple[str | None, list[str]]:
+    """Kurze Zusammenfassung mit Google Gemini (nur wenn GEMINI_API_KEY gesetzt ist).
+    Gibt (Zusammenfassung, [Spieler, Team, Liga]) zurück – für die Bildsuche."""
     key = os.getenv("GEMINI_API_KEY")
     if not key:
-        return None
+        return None, []
     rules = ("Write a concise summary for a Discord esports news channel: 2-3 short sentences in English, "
              "only facts, include the key names/teams/numbers, no intro phrases like 'This article', "
              "no markdown, no hashtags.")
-    if len(text) >= 200:
-        body = {"contents": [{"parts": [{"text": f"{rules}\n\nTitle: {title}\n\nArticle:\n{text[:6000]}"}]}]}
-    else:  # Artikel nicht lesbar -> Gemini sucht über Google nach der Meldung
-        prompt = (f"{rules}\nUse Google Search to find this news and summarize it. "
-                  f"If you cannot find reliable information, answer exactly NONE.\n\n"
-                  f"Title: {title}\nSource: {source}")
-        body = {"contents": [{"parts": [{"text": prompt}]}], "tools": [{"google_search": {}}]}
+    rules += ("\nAfter the summary, add one last line exactly like 'IMAGE: <player> | <team> | <league>' with "
+              "the in-game name of the most relevant player or coach, the most relevant team and the league or "
+              "tournament (use NONE for anything not mentioned).")
+    if len(text) < 200:
+        return None, []  # ohne Artikeltext keine Zusammenfassung (sonst würde die KI raten)
+    body = {"contents": [{"parts": [{"text": f"{rules}\n\nTitle: {title}\n\nArticle:\n{text[:6000]}"}]}]}
     global _last_ai_call
     for model in config.GEMINI_MODELS:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -362,9 +362,17 @@ def ai_summary(title: str, text: str, source: str) -> str | None:
                     break
                 out = " ".join(p.get("text", "") for p in parts).strip()
                 out = re.sub(r"\s*\[\d+(,\s*\d+)*\]", "", out).strip()  # Quellen-Nummern entfernen
+                subjects = []
+                m = re.search(r"\s*IMAGE:\s*(.+?)\s*$", out, re.I)
+                if m:
+                    out = out[: m.start()].strip()
+                    for name in m.group(1).split("|"):
+                        name = name.strip(" *.'\"<>")
+                        if name and name.upper() != "NONE":
+                            subjects.append(name)
                 if not out or out.upper().startswith("NONE"):
-                    return None
-                return out[:900]
+                    return None, subjects
+                return out[:900], subjects
             try:
                 msg = r.json().get("error", {}).get("message", "")
             except ValueError:
@@ -376,12 +384,96 @@ def ai_summary(title: str, text: str, source: str) -> str | None:
                 time.sleep(30)
                 continue
             if r.status_code == 429 and "limit: 0" not in msg:
-                return None  # Kontingent gerade erschöpft -> andere Modelle teilen es meist, nicht weiter probieren
+                return None, []  # Kontingent gerade erschöpft -> andere Modelle teilen es meist, nicht weiter probieren
             break
+    return None, []
+
+
+STOPWORDS = {"sources", "source", "report", "reports", "the", "a", "an", "to", "for", "of", "in", "on", "and",
+             "as", "with", "at", "set", "after", "from", "by", "is", "will", "their", "his", "her"}
+
+
+def keywords(title: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", title.lower()) if w not in STOPWORDS and len(w) > 1}
+
+
+def find_other_source(item: dict) -> dict | None:
+    """Sucht über Google News einen anderen, lesbaren Artikel zur selben Meldung."""
+    from config import google_news
+    title = re.sub(r"^(sources?|report|reports|breaking)\s*:\s*", "", item["title"], flags=re.I)
+    want = keywords(title)
+    try:
+        entries = fetch_rss(google_news(title))
+    except Exception as exc:
+        print(f"   (andere Quelle: Suche fehlgeschlagen: {exc})")
+        return None
+    tried = 0
+    for e in entries:
+        if tried >= 3:
+            break
+        if e["source"] and e["source"].lower() == (item.get("source") or "").lower():
+            continue
+        overlap = len(want & keywords(e["title"])) / max(len(want), 1)
+        if overlap < 0.6:  # muss klar dieselbe Meldung sein
+            continue
+        tried += 1
+        url = resolve_google(e["url"]) if "news.google.com" in e["url"] else e["url"]
+        if not url:
+            continue
+        page = read_article(url)
+        if len(page["text"]) >= 200:
+            print(f"   (Text von anderer Quelle: {e['source']})")
+            page["url"] = url
+            return page
+    print("   (keine lesbare andere Quelle gefunden)")
     return None
 
 
-def enrich(item: dict) -> None:
+PLAYER_PATTERNS = [
+    r"\bparts? ways with\s+([\w.\-]+)",
+    r"^(?:\w+\s*:\s*)?([\w.\-]+)\s+(?:is\s+)?(?:set to join|to join|joins|has joined|signs with|re-signs with|"
+    r"extends|moves to|leaves|departs|retires)",
+    r"\b(?:sign|signs|signed|re-signs|acquire|acquires|pick|picks|welcome|welcomes|promote|promotes|bench|benches|"
+    r"release|releases)\s+([\w.\-]+)",
+]
+
+
+def player_from_title(title: str) -> str | None:
+    """Notlösung ohne KI: Spielernamen aus typischen Transfer-Titeln lesen."""
+    for pat in PLAYER_PATTERNS:
+        m = re.search(pat, title, re.I)
+        if m and m.group(1).lower() not in {"the", "a", "an", "with", "their", "new", "former", "star"}:
+            return m.group(1)
+    return None
+
+
+_last_wiki_call = 0.0
+
+
+def liquipedia_image(name: str, wiki: str) -> str | None:
+    """Spielerfoto von Liquipedia (offizielle API, max. 1 Anfrage alle 2 Sekunden)."""
+    global _last_wiki_call
+    wait = _last_wiki_call + 2.5 - time.time()
+    if wait > 0:
+        time.sleep(wait)
+    _last_wiki_call = time.time()
+    try:
+        r = requests.get(f"https://liquipedia.net/{wiki}/api.php", timeout=20,
+                         headers={"User-Agent": f"EsportsNewsDiscordBot/1.0 ({config.CONTACT})",
+                                  "Accept-Encoding": "gzip"},
+                         params={"action": "query", "titles": name, "redirects": 1, "prop": "pageimages",
+                                 "piprop": "thumbnail", "pithumbsize": 600, "format": "json"})
+        r.raise_for_status()
+        for page in r.json().get("query", {}).get("pages", {}).values():
+            src = (page.get("thumbnail") or {}).get("source")
+            if src:
+                return src
+    except Exception as exc:
+        print(f"   (Spielerbild nicht abrufbar: {exc})")
+    return None
+
+
+def enrich(item: dict, game: dict | None = None, label: str = "") -> None:
     """Holt Zusammenfassung, Bild und direkten Link zum Artikel."""
     url = item["url"]
     if "news.google.com" in url:
@@ -389,14 +481,39 @@ def enrich(item: dict) -> None:
         if url:
             item["url"] = url
     page = read_article(url) if url else {"teaser": "", "image": None, "text": ""}
+    image_src = url  # Seite, von der das Bild stammt
+    if len(page["text"]) < 200:  # Seite gesperrt oder kaum Text -> andere Seite zur selben Meldung
+        other = find_other_source(item)
+        if other:
+            if not page["image"]:
+                image_src = other["url"]
+            page = {"teaser": page["teaser"] or other["teaser"], "text": other["text"],
+                    "image": page["image"] or other["image"]}
 
-    site = urlparse(url or "").netloc.lower().removeprefix("www.")
+    # 1) Bild der News-Seite (nur von bekannten Esports-Seiten, sonst oft zufällige Stockfotos)
+    site = urlparse(image_src or "").netloc.lower().removeprefix("www.")
     trusted = any(site == d or site.endswith("." + d) for d in config.TRUSTED_IMAGE_SITES)
     if not item.get("image") and page["image"] and trusted:
         item["image"] = page["image"]
 
-    summary = ai_summary(item["title"], page["text"], item.get("source", ""))
+    summary, subjects = ai_summary(item["title"], page["text"], item.get("source", ""))
     used_ai = bool(summary)
+
+    # 2) Kein Bild -> passendes Bild auf Liquipedia suchen: Spieler, Team, Liga, zuletzt Spiel-Logo
+    if not item.get("image") and config.FALLBACK_IMAGES and game and game.get("liquipedia"):
+        guess = player_from_title(item["title"])
+        acronyms = [w for w in re.findall(r"\b[A-Z]{2,5}\b", item["title"]) if w not in {"VOD", "NA", "EU", "AI"}]
+        candidates = subjects + ([guess] if guess else []) + acronyms  # z. B. "LCK", "VCT"
+        for name in dict.fromkeys(candidates):  # Reihenfolge behalten, doppelte raus
+            photo = liquipedia_image(name, game["liquipedia"])
+            if photo:
+                print(f"   🖼️ Bild gesucht: {name}")
+                item["image"] = photo
+                break
+        if not item.get("image"):
+            item["image"] = game.get("default_image") or liquipedia_image(game["name"], game["liquipedia"])
+            print(f"   🖼️ Bild gesucht: Spiel-Logo ({'ok' if item['image'] else 'nicht gefunden'})")
+
     if not summary:  # ohne KI: Artikelanfang bzw. Kurzbeschreibung
         lead = page["text"][: config.SUMMARY_LENGTH + 200]
         summary = lead if len(lead) >= 120 else (page["teaser"] or lead)
@@ -491,7 +608,7 @@ def main(dry_run: bool = False) -> int:
 
             for item in to_post:
                 if not item.get("is_result"):
-                    enrich(item)
+                    enrich(item, game, label_for(src, item))
                 if dry_run:
                     extra = item["summary"].replace("\n", " | ") if item.get("is_result") else item["url"]
                     print(f"   → [{label_for(src, item)}] {item['title']}  ({extra})")
@@ -540,7 +657,7 @@ def test_ai() -> int:
                 continue
             item = max(items, key=lambda i: i["date"] or datetime.min.replace(tzinfo=timezone.utc))
             print(f"\n🧪 {game['name']} | {label_for(src, item)} | {item['title']}")
-            enrich(item)
+            enrich(item, game, label_for(src, item))
             print(f"   Link: {item['url']}")
             print(f"   Bild: {item.get('image')}")
             print(f"   Text: {item['summary'] or '-'}")

@@ -34,6 +34,8 @@ SPOILER_RESULTS = False
 GAMES = {
     "lol": {
         "name": "League of Legends",
+        "liquipedia": "leagueoflegends",  # Wiki für Bilder (Spieler, Teams, Ligen)
+        "default_image": "",  # optional: eigenes Ersatzbild (URL), sonst Spiel-Logo von Liquipedia
         "webhook_env": "LOL_WEBHOOK_URL",  # GitHub-Secret mit der Webhook-URL
         # Optional eigener Kanal für Patch-Notes. Ist das Secret nicht gesetzt,
         # landen Patch-Notes im normalen Kanal.
@@ -58,6 +60,8 @@ GAMES = {
     },
     "valo": {
         "name": "Valorant",
+        "liquipedia": "valorant",
+        "default_image": "",
         "webhook_env": "VALO_WEBHOOK_URL",
         "patch_webhook_env": "VALO_PATCH_WEBHOOK_URL",
         "color": 0xFF4655,
@@ -98,6 +102,11 @@ GEMINI_MODELS = [
     "gemini-flash-latest",
 ]
 GEMINI_PAUSE_SECONDS = 15   # Pause zwischen KI-Anfragen (Gratis-Stufe: nur wenige pro Minute)
+
+# Hat die News-Seite kein Bild, sucht der Bot eins auf Liquipedia (Spieler, Team, Liga, Spiel-Logo)
+FALLBACK_IMAGES = True
+# Kontakt für Liquipedia (verlangt, dass sich Bots mit einer Kontaktmöglichkeit ausweisen)
+CONTACT = "https://github.com/snakebitepray-cmd/esports-news-bot"
 
 # Bilder aus Artikeln nur von diesen Seiten übernehmen (andere nutzen oft zufällige Stockfotos)
 TRUSTED_IMAGE_SITES = [
