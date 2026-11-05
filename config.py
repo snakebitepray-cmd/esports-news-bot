@@ -81,6 +81,7 @@ GAMES = {
 # (gegen Guides/Tier-Lists, die keine News sind). Groß/klein egal.
 EXCLUDE_KEYWORDS = [
     "tier list", "how to", "guide", "best build", "counter", "codes", "crosshair",
+    "betting", "casino", "gambling",
     "lpl financial", "stock", "wealth management", "investor", "nasdaq", "nyse",
     "how to watch", "watch live", "live stream", "livestream", "schedule and results", "stream schedule",
 ]
@@ -93,10 +94,10 @@ MIN_TITLE_WORDS = 4
 # falls eines kein kostenloses Kontingent (mehr) hat.
 GEMINI_MODELS = [
     "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
     "gemini-flash-latest",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
 ]
+GEMINI_PAUSE_SECONDS = 15   # Pause zwischen KI-Anfragen (Gratis-Stufe: nur wenige pro Minute)
 
 # Bilder aus Artikeln nur von diesen Seiten übernehmen (andere nutzen oft zufällige Stockfotos)
 TRUSTED_IMAGE_SITES = [

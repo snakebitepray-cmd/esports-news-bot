@@ -323,6 +323,9 @@ def read_article(url: str) -> dict:
     }
 
 
+_last_ai_call = 0.0
+
+
 def ai_summary(title: str, text: str, source: str) -> str | None:
     """Kurze Zusammenfassung mit Google Gemini (nur wenn GEMINI_API_KEY gesetzt ist)."""
     key = os.getenv("GEMINI_API_KEY")
@@ -338,9 +341,14 @@ def ai_summary(title: str, text: str, source: str) -> str | None:
                   f"If you cannot find reliable information, answer exactly NONE.\n\n"
                   f"Title: {title}\nSource: {source}")
         body = {"contents": [{"parts": [{"text": prompt}]}], "tools": [{"google_search": {}}]}
+    global _last_ai_call
     for model in config.GEMINI_MODELS:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         for attempt in range(2):
+            wait = _last_ai_call + config.GEMINI_PAUSE_SECONDS - time.time()
+            if wait > 0:  # Gratis-Stufe erlaubt nur wenige Anfragen pro Minute
+                time.sleep(wait)
+            _last_ai_call = time.time()
             try:
                 r = requests.post(url, json=body, headers={"x-goog-api-key": key}, timeout=60)
             except Exception as exc:
@@ -363,11 +371,12 @@ def ai_summary(title: str, text: str, source: str) -> str | None:
                 msg = r.text
             msg = re.sub(r"\s+", " ", msg)[:200]
             print(f"   (KI {model}: {r.status_code} {msg})")
-            # Kurz überlastet -> einmal warten; Kontingent leer/Modell fehlt -> nächstes Modell
-            if r.status_code in (500, 503) or (r.status_code == 429 and "limit: 0" not in msg
-                                               and "quota" not in msg.lower() and attempt == 0):
-                time.sleep(8)
+            # Überlastet / zu viele Anfragen -> 30 s warten und nochmal; Modell fehlt -> nächstes Modell
+            if attempt == 0 and (r.status_code in (500, 503) or (r.status_code == 429 and "limit: 0" not in msg)):
+                time.sleep(30)
                 continue
+            if r.status_code == 429 and "limit: 0" not in msg:
+                return None  # Kontingent gerade erschöpft -> andere Modelle teilen es meist, nicht weiter probieren
             break
     return None
 
@@ -397,10 +406,14 @@ def enrich(item: dict) -> None:
           f" | Bild: {'ja' if item.get('image') else 'nein'}")
 
 
+def has_word(title: str, words) -> bool:
+    """True, wenn eines der Wörter (als Wortanfang, z. B. 'sign' -> 'signs') im Titel steht."""
+    return any(re.search(r"\b" + re.escape(w), title, re.I) for w in words)
+
+
 def label_for(src: dict, item: dict) -> str:
     """Esports-Artikel über Spielerwechsel bekommen das Transfer-Label."""
-    title = item["title"].lower()
-    if "Esports" in src["label"] and any(w in title for w in config.TRANSFER_WORDS):
+    if "Esports" in src["label"] and has_word(item["title"], config.TRANSFER_WORDS):
         return config.TRANSFER_LABEL
     return src["label"]
 
@@ -468,8 +481,7 @@ def main(dry_run: bool = False) -> int:
                 and (i.get("is_result") or norm_title(i["title"]) not in seen_titles)
                 and not any(k in i["title"].lower() for k in excluded)
                 and (i.get("is_result") or len(i["title"].split()) >= config.MIN_TITLE_WORDS)
-                and (not src.get("title_must_contain")
-                     or any(k in i["title"].lower() for k in src["title_must_contain"]))
+                and (not src.get("title_must_contain") or has_word(i["title"], src["title_must_contain"]))
             ]
             fresh.sort(key=lambda i: i["date"] or datetime.min.replace(tzinfo=timezone.utc))
             # Beim allerersten Lauf nur den neuesten Artikel posten (kein Spam)
@@ -516,7 +528,11 @@ def test_ai() -> int:
             if src["type"] != "rss":
                 continue
             try:
-                items = [i for i in FETCHERS["rss"](src) if len(i["title"].split()) >= config.MIN_TITLE_WORDS]
+                excluded = [k.lower() for k in config.EXCLUDE_KEYWORDS]
+                items = [i for i in FETCHERS["rss"](src)
+                         if len(i["title"].split()) >= config.MIN_TITLE_WORDS
+                         and not any(k in i["title"].lower() for k in excluded)
+                         and (not src.get("title_must_contain") or has_word(i["title"], src["title_must_contain"]))]
             except Exception as exc:
                 print(f"❌ {src['url'][:60]}: {exc}")
                 continue
