@@ -2,7 +2,7 @@ name: Esports News
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # alle 30 Minuten
+    - cron: "7,37 * * * *"   # alle 30 Minuten (zur Minute 7 und 37)
   workflow_dispatch:          # manuell starten über "Run workflow"
     inputs:
       dry_run:
