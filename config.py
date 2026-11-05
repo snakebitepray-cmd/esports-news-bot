@@ -88,7 +88,7 @@ EXCLUDE_KEYWORDS = [
     "tier list", "how to", "guide", "best build", "counter", "codes", "crosshair",
     "betting", "casino", "gambling",
     "lpl financial", "stock", "wealth management", "investor", "nasdaq", "nyse",
-    " plc", "returns chart", "share price", "dividend", "earnings", "market cap",
+    " plc", "returns chart", "share price", "dividend", "market cap",
     "how to watch", "watch live", "live stream", "livestream", "schedule and results", "stream schedule",
 ]
 
