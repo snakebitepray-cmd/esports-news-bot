@@ -233,7 +233,11 @@ def fetch_vlr(src: dict) -> list[dict]:
         names = [t.select_one(".match-item-vs-team-name").get_text(" ", strip=True) for t in teams]
         scores = [t.select_one(".match-item-vs-team-score").get_text(strip=True) for t in teams]
         eta = a.select_one(".ml-eta")
+        winner = None
+        if scores[0].isdigit() and scores[1].isdigit() and scores[0] != scores[1]:
+            winner = names[0] if int(scores[0]) > int(scores[1]) else names[1]
         items.append({
+            "winner": winner,
             "id": "vlr-" + a["href"].split("/")[1],
             "title": f"{names[0]} vs {names[1]}",
             "url": urljoin(src["url"], a["href"]),
@@ -448,29 +452,124 @@ def player_from_title(title: str) -> str | None:
 
 
 _last_wiki_call = 0.0
+_liquipedia_blocked = False
+_lol_people: dict | None = None
+_riot_fallback: dict = {}
+BOT_UA = f"EsportsNewsDiscordBot/1.0 ({config.CONTACT})"
 
 
 def liquipedia_image(name: str, wiki: str) -> str | None:
-    """Spielerfoto von Liquipedia (offizielle API, max. 1 Anfrage alle 2 Sekunden)."""
-    global _last_wiki_call
+    """Bild von Liquipedia (offizielle API, langsam; wird nach einer Sperre nicht mehr gefragt)."""
+    global _last_wiki_call, _liquipedia_blocked
+    if _liquipedia_blocked:
+        return None
     wait = _last_wiki_call + 2.5 - time.time()
     if wait > 0:
         time.sleep(wait)
     _last_wiki_call = time.time()
     try:
         r = requests.get(f"https://liquipedia.net/{wiki}/api.php", timeout=20,
-                         headers={"User-Agent": f"EsportsNewsDiscordBot/1.0 ({config.CONTACT})",
-                                  "Accept-Encoding": "gzip"},
+                         headers={"User-Agent": BOT_UA, "Accept-Encoding": "gzip"},
                          params={"action": "query", "titles": name, "redirects": 1, "prop": "pageimages",
                                  "piprop": "thumbnail", "pithumbsize": 600, "format": "json"})
+        if r.status_code in (403, 429):
+            _liquipedia_blocked = True
+            print(f"   (Liquipedia blockt gerade ({r.status_code}) – wird in diesem Lauf nicht mehr gefragt)")
+            return None
         r.raise_for_status()
         for page in r.json().get("query", {}).get("pages", {}).values():
             src = (page.get("thumbnail") or {}).get("source")
             if src:
                 return src
     except Exception as exc:
-        print(f"   (Spielerbild nicht abrufbar: {exc})")
+        print(f"   (Liquipedia: {exc})")
     return None
+
+
+def lolesports_image(name: str) -> str | None:
+    """Offizielles Spielerfoto oder Team-Logo aus den lolesports-Daten (nur LoL)."""
+    global _lol_people
+    if _lol_people is None:
+        _lol_people = {}
+        try:
+            r = requests.get("https://esports-api.lolesports.com/persisted/gw/getTeams", timeout=30,
+                             params={"hl": "en-US"}, headers={**HEADERS, "x-api-key": LOLESPORTS_KEY})
+            r.raise_for_status()
+            for t in r.json()["data"]["teams"]:
+                for key in (t.get("name"), t.get("code"), t.get("slug")):
+                    if key and t.get("image"):
+                        _lol_people.setdefault(("team", key.lower()), t["image"])
+                for pl in t.get("players") or []:
+                    img = pl.get("image") or ""
+                    if pl.get("summonerName") and img and "default" not in img.lower():
+                        _lol_people.setdefault(("player", pl["summonerName"].lower()), img)
+        except Exception as exc:
+            print(f"   (lolesports-Bilder nicht abrufbar: {exc})")
+    n = name.lower()
+    return _lol_people.get(("player", n)) or _lol_people.get(("team", n))
+
+
+ESPORTS_HINTS = ("esport", "league of legends", "valorant", "gamer", "video game", "professional player",
+                 "gaming", "tournament", "championship", "league")
+
+
+def wikipedia_image(name: str) -> str | None:
+    """Bild von Wikipedia – nur wenn die Seite wirklich zu Esports gehört."""
+    for title in (name, f"{name} (gamer)", f"{name} (esports)"):
+        try:
+            r = requests.get("https://en.wikipedia.org/w/api.php", timeout=20, headers={"User-Agent": BOT_UA},
+                             params={"action": "query", "titles": title, "redirects": 1, "format": "json",
+                                     "prop": "pageimages|description", "piprop": "thumbnail",
+                                     "pithumbsize": 600, "pilicense": "any"})
+            r.raise_for_status()
+            for page in r.json().get("query", {}).get("pages", {}).values():
+                desc = (page.get("description") or "").lower()
+                src = (page.get("thumbnail") or {}).get("source")
+                if src and any(h in desc for h in ESPORTS_HINTS):
+                    return src
+        except Exception as exc:
+            print(f"   (Wikipedia: {exc})")
+            return None
+    return None
+
+
+def riot_fallback_image(game: dict) -> str | None:
+    """Letzter Ausweg: Bild des neuesten offiziellen Riot-Artikels zum Spiel."""
+    key = game["name"]
+    if key not in _riot_fallback:
+        _riot_fallback[key] = None
+        for src in game["sources"]:
+            if src["type"] != "riot":
+                continue
+            try:
+                items = [i for i in fetch_riot(src["url"]) if i.get("image")]
+                items.sort(key=lambda i: i["date"] or datetime.min.replace(tzinfo=timezone.utc))
+                if items:
+                    _riot_fallback[key] = items[-1]["image"]
+                    break
+            except Exception as exc:
+                print(f"   (Riot-Ersatzbild nicht abrufbar: {exc})")
+    return _riot_fallback[key]
+
+
+def find_image(names: list[str], game: dict) -> tuple[str | None, str]:
+    """Sucht ein passendes Bild zu Spieler/Team/Liga. Gibt (Bild, Herkunft) zurück."""
+    for name in names:
+        if game.get("liquipedia") == "leagueoflegends":
+            img = lolesports_image(name)
+            if img:
+                return img, f"{name} (lolesports)"
+        img = wikipedia_image(name)
+        if img:
+            return img, f"{name} (Wikipedia)"
+        if game.get("liquipedia"):
+            img = liquipedia_image(name, game["liquipedia"])
+            if img:
+                return img, f"{name} (Liquipedia)"
+    if game.get("default_image"):
+        return game["default_image"], "eigenes Ersatzbild"
+    img = riot_fallback_image(game)
+    return img, "neuestes Riot-Bild" if img else "nichts gefunden"
 
 
 def enrich(item: dict, game: dict | None = None, label: str = "") -> None:
@@ -499,20 +598,15 @@ def enrich(item: dict, game: dict | None = None, label: str = "") -> None:
     summary, subjects = ai_summary(item["title"], page["text"], item.get("source", ""))
     used_ai = bool(summary)
 
-    # 2) Kein Bild -> passendes Bild auf Liquipedia suchen: Spieler, Team, Liga, zuletzt Spiel-Logo
+    # 2) Kein Bild -> passendes Bild suchen: Spieler, Team, Liga (lolesports, Wikipedia, Liquipedia),
+    #    zuletzt eigenes Ersatzbild bzw. neuestes offizielles Riot-Bild
     if not item.get("image") and config.FALLBACK_IMAGES and game and game.get("liquipedia"):
         guess = player_from_title(item["title"])
         acronyms = [w for w in re.findall(r"\b[A-Z]{2,5}\b", item["title"]) if w not in {"VOD", "NA", "EU", "AI"}]
         candidates = subjects + ([guess] if guess else []) + acronyms  # z. B. "LCK", "VCT"
-        for name in dict.fromkeys(candidates):  # Reihenfolge behalten, doppelte raus
-            photo = liquipedia_image(name, game["liquipedia"])
-            if photo:
-                print(f"   🖼️ Bild gesucht: {name}")
-                item["image"] = photo
-                break
-        if not item.get("image"):
-            item["image"] = game.get("default_image") or liquipedia_image(game["name"], game["liquipedia"])
-            print(f"   🖼️ Bild gesucht: Spiel-Logo ({'ok' if item['image'] else 'nicht gefunden'})")
+        img, origin = find_image(list(dict.fromkeys(candidates)), game)  # doppelte raus
+        print(f"   🖼️ Bild gesucht: {origin}")
+        item["image"] = img
 
     if not summary:  # ohne KI: Artikelanfang bzw. Kurzbeschreibung
         lead = page["text"][: config.SUMMARY_LENGTH + 200]
@@ -609,6 +703,11 @@ def main(dry_run: bool = False) -> int:
             for item in to_post:
                 if not item.get("is_result"):
                     enrich(item, game, label_for(src, item))
+                elif not item.get("thumbnail") and config.FALLBACK_IMAGES and not config.SPOILER_RESULTS:
+                    # z. B. Valorant (vlr.gg liefert keine Logos): Logo des Siegers suchen
+                    img, origin = find_image([item["winner"]] if item.get("winner") else [], game)
+                    print(f"   🖼️ Bild gesucht: {origin}")
+                    item["thumbnail"] = img
                 if dry_run:
                     extra = item["summary"].replace("\n", " | ") if item.get("is_result") else item["url"]
                     print(f"   → [{label_for(src, item)}] {item['title']}  ({extra})")

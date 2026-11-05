@@ -103,7 +103,7 @@ GEMINI_MODELS = [
 ]
 GEMINI_PAUSE_SECONDS = 15   # Pause zwischen KI-Anfragen (Gratis-Stufe: nur wenige pro Minute)
 
-# Hat die News-Seite kein Bild, sucht der Bot eins auf Liquipedia (Spieler, Team, Liga, Spiel-Logo)
+# Hat die News-Seite kein Bild, sucht der Bot ein passendes (Spieler, Team, Liga; sonst Riot-Bild)
 FALLBACK_IMAGES = True
 # Kontakt für Liquipedia (verlangt, dass sich Bots mit einer Kontaktmöglichkeit ausweisen)
 CONTACT = "https://github.com/snakebitepray-cmd/esports-news-bot"
