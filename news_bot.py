@@ -417,7 +417,10 @@ def main(dry_run: bool = False) -> int:
                         print(f"     📝 {item['summary']}")
                     continue
                 try:
-                    post_to_discord(webhook, game, src, item)
+                    target = webhook
+                    if src.get("patch") and os.getenv(game.get("patch_webhook_env", "")):
+                        target = os.getenv(game["patch_webhook_env"])  # eigener Patch-Kanal
+                    post_to_discord(target, game, src, item)
                 except Exception as exc:
                     errors += 1
                     print(f"❌ Posten fehlgeschlagen: {exc}")

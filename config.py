@@ -35,9 +35,12 @@ GAMES = {
     "lol": {
         "name": "League of Legends",
         "webhook_env": "LOL_WEBHOOK_URL",  # GitHub-Secret mit der Webhook-URL
+        # Optional eigener Kanal für Patch-Notes. Ist das Secret nicht gesetzt,
+        # landen Patch-Notes im normalen Kanal.
+        "patch_webhook_env": "LOL_PATCH_WEBHOOK_URL",
         "color": 0xC89B3C,
         "sources": [
-            {"type": "riot", "label": "🛠️ Update",
+            {"type": "riot", "label": "🛠️ Update", "patch": True,
              "url": f"https://www.leagueoflegends.com/{RIOT_LOCALE}/news/game-updates/"},
             {"type": "riot", "label": "🏆 Esports",
              "url": f"https://www.leagueoflegends.com/{RIOT_LOCALE}/news/esports/"},
@@ -56,9 +59,10 @@ GAMES = {
     "valo": {
         "name": "Valorant",
         "webhook_env": "VALO_WEBHOOK_URL",
+        "patch_webhook_env": "VALO_PATCH_WEBHOOK_URL",
         "color": 0xFF4655,
         "sources": [
-            {"type": "riot", "label": "🛠️ Update",
+            {"type": "riot", "label": "🛠️ Update", "patch": True,
              "url": f"https://playvalorant.com/{RIOT_LOCALE}/news/game-updates/"},
             {"type": "rss", "label": TRANSFER_LABEL, "title_must_contain": TRANSFER_WORDS,
              "url": google_news('(VCT OR Valorant) '
