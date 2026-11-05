@@ -46,10 +46,10 @@ GAMES = {
              "url": f"https://www.leagueoflegends.com/{RIOT_LOCALE}/news/esports/"},
             # Spielerwechsel (steht VOR den allgemeinen News, damit sie das Transfer-Label bekommen)
             {"type": "rss", "label": TRANSFER_LABEL, "title_must_contain": TRANSFER_WORDS,
-             "url": google_news('(LEC OR LCK OR LPL OR LCS OR "League of Legends" OR "LoL Esports") '
+             "url": google_news('(LEC OR LCK OR "LPL esports" OR LCS OR "League of Legends" OR "LoL Esports") '
                                 '(roster OR signs OR joins OR transfer OR "parts ways" OR "free agent" OR benched) when:2d')},
             {"type": "rss", "label": "🏆 Esports",
-             "url": google_news('"LoL Esports" OR LEC OR LCK OR LPL OR "League of Legends Worlds" when:2d')},
+             "url": google_news('"LoL Esports" OR LEC OR LCK OR "LPL esports" OR "League of Legends Worlds" when:2d')},
             # Match-Ergebnisse von lolesports.com. Ligen per Kürzel (Anfang des "slug").
             {"type": "lolesports", "label": "📊 Result",
              "url": "https://esports-api.lolesports.com/persisted/gw/getSchedule",
@@ -81,6 +81,7 @@ GAMES = {
 # (gegen Guides/Tier-Lists, die keine News sind). Groß/klein egal.
 EXCLUDE_KEYWORDS = [
     "tier list", "how to", "guide", "best build", "counter", "codes", "crosshair",
+    "lpl financial", "stock", "wealth management", "investor", "nasdaq", "nyse",
     "how to watch", "watch live", "live stream", "livestream", "schedule and results", "stream schedule",
 ]
 
