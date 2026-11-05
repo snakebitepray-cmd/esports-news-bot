@@ -397,6 +397,7 @@ def main(dry_run: bool = False) -> int:
                 # gleiche Story aus mehreren Quellen nur einmal (nicht bei Ergebnissen)
                 and (i.get("is_result") or norm_title(i["title"]) not in seen_titles)
                 and not any(k in i["title"].lower() for k in excluded)
+                and (i.get("is_result") or len(i["title"].split()) >= config.MIN_TITLE_WORDS)
                 and (not src.get("title_must_contain")
                      or any(k in i["title"].lower() for k in src["title_must_contain"]))
             ]

@@ -77,7 +77,11 @@ GAMES = {
 # (gegen Guides/Tier-Lists, die keine News sind). Groß/klein egal.
 EXCLUDE_KEYWORDS = [
     "tier list", "how to", "guide", "best build", "counter", "codes", "crosshair",
+    "how to watch", "watch live", "live stream", "livestream", "schedule and results", "stream schedule",
 ]
+
+# Titel mit weniger Wörtern werden ignoriert (z. B. Video-Seiten, die nur "VOD" heißen)
+MIN_TITLE_WORDS = 4
 
 SUMMARY_LENGTH = 500       # ungefähre Länge der Zusammenfassung in Zeichen
 MAX_POSTS_PER_SOURCE = 5   # pro Durchlauf, damit der Kanal nicht geflutet wird
