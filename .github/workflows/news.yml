@@ -37,6 +37,7 @@ jobs:
           VALO_WEBHOOK_URL: ${{ secrets.VALO_WEBHOOK_URL }}
           LOL_PATCH_WEBHOOK_URL: ${{ secrets.LOL_PATCH_WEBHOOK_URL }}
           VALO_PATCH_WEBHOOK_URL: ${{ secrets.VALO_PATCH_WEBHOOK_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python news_bot.py ${{ inputs.dry_run && '--dry-run' || '' }}
 
       - name: Gesehene Artikel speichern
