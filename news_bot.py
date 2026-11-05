@@ -273,7 +273,7 @@ def article_lead(soup, limit: int) -> str:
         junk.decompose()
     paras = []
     for p in body.find_all(["p", "li"]):
-        text = re.sub(r"\s+", " ", p.get_text(" ", strip=True))
+        text = re.sub(r"\s+", " ", p.get_text()).strip()  # ohne Trenner, sonst "2 026" / "O XY"
         if len(text) < 60 or any(b in text.lower() for b in BOILERPLATE) or text in paras:
             continue
         paras.append(text)
@@ -337,7 +337,8 @@ def ai_summary(title: str, text: str, source: str) -> tuple[str | None, list[str
     if not key:
         return None, []
     rules = ("Write a concise summary for a Discord esports news channel: 2-3 short sentences in English, "
-             "only facts, include the key names/teams/numbers, no intro phrases like 'This article', "
+             "only facts, include the key names/teams/numbers, refer to players and coaches only by their "
+             "in-game names (e.g. 'Zellsis', not their real names), no intro phrases like 'This article', "
              "no markdown, no hashtags.")
     rules += ("\nAfter the summary, add one last line exactly like 'IMAGE: <player> | <team> | <league>' with "
               "the in-game name of the most relevant player or coach, the most relevant team and the league or "
