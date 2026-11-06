@@ -158,17 +158,43 @@ LOLESPORTS_KEY = "0TvQnueqKa5mxJntVWt0w4LpLfEkrV1Ta8rQBb9Z"
 _lol_events_cache: dict = {}
 
 
+def _norm(x: str) -> str:
+    return re.sub(r"[\s_\-]+", " ", (x or "").lower()).strip()
+
+
+def league_tier(slug: str, name: str, src: dict) -> str | None:
+    """'major' (volle Darstellung), 'minor' (kompakt) oder None (ignorieren)."""
+    s, n = _norm(slug), _norm(name)
+    if any(k in (s, n) for k in map(_norm, src.get("leagues", []))):
+        return "major"
+    if any(s.startswith(k) or n.startswith(k) for k in map(_norm, src.get("leagues_minor", []))):
+        return "minor"
+    return None
+
+
+_lol_tiers: dict = {}
+
+
 def lol_events(src: dict) -> list[dict]:
     """Spielplan der gewählten Ligen von lolesports.com (einmal pro Lauf abgerufen)."""
-    key = tuple(src["leagues"])
+    key = tuple(src["leagues"] + src.get("leagues_minor", []))
     if key in _lol_events_cache:
         return _lol_events_cache[key]
     api = "https://esports-api.lolesports.com/persisted/gw"
     hdr = {**HEADERS, "x-api-key": LOLESPORTS_KEY}
     leagues = requests.get(f"{api}/getLeagues", params={"hl": "en-US"}, headers=hdr, timeout=30)
     leagues.raise_for_status()
-    wanted = [lg for lg in leagues.json()["data"]["leagues"]
-              if any(lg["slug"].startswith(s) for s in src["leagues"])]
+    all_leagues = leagues.json()["data"]["leagues"]
+    wanted = []
+    for lg in all_leagues:
+        tier = league_tier(lg.get("slug", ""), lg.get("name", ""), src)
+        if tier:
+            _lol_tiers[lg.get("slug", "")] = tier
+            _lol_tiers[lg.get("name", "")] = tier
+            wanted.append(lg)
+    if src.get("_debug"):
+        print("   Ligen bei lolesports: " + ", ".join(
+            f"{lg.get('slug')}{'*' if lg in wanted else ''}" for lg in all_leagues) + "   (* = dabei)")
     if not wanted:
         raise ValueError("Keine der gewünschten Ligen gefunden")
     sched = requests.get(f"{api}/getSchedule", headers=hdr, timeout=30,
@@ -176,6 +202,11 @@ def lol_events(src: dict) -> list[dict]:
     sched.raise_for_status()
     _lol_events_cache[key] = sched.json()["data"]["schedule"]["events"]
     return _lol_events_cache[key]
+
+
+def lol_is_minor(ev: dict) -> bool:
+    lg = ev.get("league") or {}
+    return "minor" in (_lol_tiers.get(lg.get("slug", "")), _lol_tiers.get(lg.get("name", "")))
 
 
 def fetch_lolesports(src: dict) -> list[dict]:
@@ -205,6 +236,8 @@ def fetch_lolesports(src: dict) -> list[dict]:
             "date": parse_date(ev.get("startTime")),
             "source": "lolesports.com",
             "is_result": True,
+            "minor": lol_is_minor(ev),
+            "short": f"{league} · " + score_line(t1.get("code") or t1["name"], w1, t2.get("code") or t2["name"], w2),
         })
     return items
 
@@ -216,6 +249,20 @@ def parse_ago(text: str) -> datetime | None:
     if not parts:
         return None
     return datetime.now(timezone.utc) - timedelta(seconds=sum(int(n) * units[u] for n, u in parts))
+
+
+def vlr_tier(event: str, src: dict) -> str | None:
+    """'major', 'minor' (kompakt) oder None. Qualifier zählen immer als 'minor' –
+    aber nur, wenn sie zur VCT gehören (nicht z. B. Challengers-Qualifier)."""
+    e = event.lower()
+    is_vct = any(k in e for k in src.get("vct_words", ["vct", "champions tour"]))
+    if any(k in e for k in src.get("events_minor", [])) and is_vct:
+        return "minor"
+    if any(k in e for k in src.get("events_minor_any", [])):  # z. B. Game Changers (ohne "VCT" im Namen)
+        return "minor"
+    if any(k in e for k in src.get("events", [])):
+        return "major"
+    return None
 
 
 def fetch_vlr(src: dict) -> list[dict]:
@@ -237,7 +284,8 @@ def fetch_vlr(src: dict) -> list[dict]:
         if series_el:
             series_el.extract()
         event = ev_el.get_text(" ", strip=True) if ev_el else ""
-        if not any(k in event.lower() for k in src["events"]):
+        tier = vlr_tier(event, src)
+        if not tier:
             continue
         teams = a.select(".match-item-vs-team")
         if len(teams) != 2:
@@ -259,6 +307,8 @@ def fetch_vlr(src: dict) -> list[dict]:
             "date": parse_ago(eta.get_text(" ", strip=True)) if eta else None,
             "source": "vlr.gg",
             "is_result": True,
+            "minor": tier == "minor",
+            "short": f"{event} · " + score_line(names[0], scores[0], names[1], scores[1]),
         })
     return items
 
@@ -342,23 +392,13 @@ def read_article(url: str) -> dict:
 _last_ai_call = 0.0
 
 
-def ai_summary(title: str, text: str, source: str) -> tuple[str | None, list[str]]:
-    """Kurze Zusammenfassung mit Google Gemini (nur wenn GEMINI_API_KEY gesetzt ist).
-    Gibt (Zusammenfassung, [Spieler, Team, Liga]) zurück – für die Bildsuche."""
+def gemini(prompt: str) -> str | None:
+    """Fragt Google Gemini (nur wenn GEMINI_API_KEY gesetzt ist). Probiert mehrere Gratis-Modelle."""
+    global _last_ai_call
     key = os.getenv("GEMINI_API_KEY")
     if not key:
-        return None, []
-    rules = ("Write a concise summary for a Discord esports news channel: 2-3 short sentences in English, "
-             "only facts, include the key names/teams/numbers, refer to players and coaches only by their "
-             "in-game names (e.g. 'Zellsis', not their real names), no intro phrases like 'This article', "
-             "no markdown, no hashtags.")
-    rules += ("\nAfter the summary, add one last line exactly like 'IMAGE: <player> | <team> | <league>' with "
-              "the in-game name of the most relevant player or coach, the most relevant team and the league or "
-              "tournament (use NONE for anything not mentioned).")
-    if len(text) < 200:
-        return None, []  # ohne Artikeltext keine Zusammenfassung (sonst würde die KI raten)
-    body = {"contents": [{"parts": [{"text": f"{rules}\n\nTitle: {title}\n\nArticle:\n{text[:6000]}"}]}]}
-    global _last_ai_call
+        return None
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
     for model in config.GEMINI_MODELS:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         for attempt in range(2):
@@ -378,18 +418,7 @@ def ai_summary(title: str, text: str, source: str) -> tuple[str | None, list[str
                     print(f"   (KI {model}: leere Antwort)")
                     break
                 out = " ".join(p.get("text", "") for p in parts).strip()
-                out = re.sub(r"\s*\[\d+(,\s*\d+)*\]", "", out).strip()  # Quellen-Nummern entfernen
-                subjects = []
-                m = re.search(r"\s*IMAGE:\s*(.+?)\s*$", out, re.I)
-                if m:
-                    out = out[: m.start()].strip()
-                    for name in m.group(1).split("|"):
-                        name = name.strip(" *.'\"<>")
-                        if name and name.upper() != "NONE":
-                            subjects.append(name)
-                if not out or out.upper().startswith("NONE"):
-                    return None, subjects
-                return out[:900], subjects
+                return re.sub(r"\s*\[\d+(,\s*\d+)*\]", "", out).strip()  # Quellen-Nummern entfernen
             try:
                 msg = r.json().get("error", {}).get("message", "")
             except ValueError:
@@ -401,9 +430,62 @@ def ai_summary(title: str, text: str, source: str) -> tuple[str | None, list[str
                 time.sleep(30)
                 continue
             if r.status_code == 429 and "limit: 0" not in msg:
-                return None, []  # Kontingent gerade erschöpft -> andere Modelle teilen es meist, nicht weiter probieren
+                return None  # Kontingent gerade erschöpft
             break
-    return None, []
+    return None
+
+
+def ai_summary(title: str, text: str, source: str, game_name: str = "") -> dict:
+    """Kurze Zusammenfassung per KI. Gibt ein dict zurück:
+    summary (Text), subjects ([Spieler, Team, Liga] für die Bildsuche), relevant (passt zum Spiel?),
+    category ("TRANSFER" oder "ESPORTS")."""
+    result = {"summary": None, "subjects": [], "relevant": None, "category": None}
+    if len(text) < 200 or not os.getenv("GEMINI_API_KEY"):
+        return result  # ohne Artikeltext keine Zusammenfassung (sonst würde die KI raten)
+    rules = ""
+    if game_name:
+        rules = (f"First line exactly 'RELEVANT: YES' if the article is about {game_name} (the video game or "
+                 f"its esports scene), otherwise exactly 'RELEVANT: NO'.\n"
+                 f"Second line exactly 'CATEGORY: TRANSFER' if the article is mainly about a player or coach "
+                 f"joining, leaving, signing, re-signing, being benched, released or retiring, or a team's roster "
+                 f"changes; otherwise exactly 'CATEGORY: ESPORTS'.\nThen: ")
+    rules += ("Write a concise summary for a Discord esports news channel: 2-3 short sentences in English, "
+             "only facts, include the key names/teams/numbers, refer to players and coaches only by their "
+             "in-game names (e.g. 'Zellsis', not their real names), no intro phrases like 'This article', "
+             "no markdown, no hashtags.")
+    rules += ("\nAfter the summary, add one last line exactly like 'IMAGE: <player> | <team> | <league>' with "
+              "the in-game name of the most relevant player or coach, the most relevant team and the league or "
+              "tournament (use NONE for anything not mentioned).")
+    out = gemini(f"{rules}\n\nTitle: {title}\n\nArticle:\n{text[:6000]}")
+    if not out:
+        return result
+    m = re.match(r"\s*\**RELEVANT:\s*(YES|NO)\**\s*", out, re.I)
+    if m:
+        result["relevant"] = m.group(1).upper() == "YES"
+        out = out[m.end():].strip()
+    m = re.match(r"\s*\**CATEGORY:\s*(TRANSFER|ESPORTS)\**\s*", out, re.I)
+    if m:
+        result["category"] = m.group(1).upper()
+        out = out[m.end():].strip()
+    subjects = []
+    m = re.search(r"\s*IMAGE:\s*(.+?)\s*$", out, re.I)
+    if m:
+        out = out[: m.start()].strip()
+        for name in m.group(1).split("|"):
+            name = name.strip(" *.'\"<>")
+            if name and name.upper() != "NONE":
+                subjects.append(name)
+    result["subjects"] = subjects
+    if out and not out.upper().startswith("NONE"):
+        result["summary"] = out[:900]
+    return result
+
+
+def ai_same_story(a: str, b: str) -> bool:
+    """Grenzfall: entscheidet per KI, ob zwei Überschriften dieselbe Meldung sind."""
+    out = gemini("Do these two esports news headlines report the same news event (same people/teams and the "
+                 "same thing happening)? Answer only YES or NO.\n\n1. " + a + "\n2. " + b)
+    return bool(out) and out.strip().upper().startswith("YES")
 
 
 STOPWORDS = {"sources", "source", "report", "reports", "the", "a", "an", "to", "for", "of", "in", "on", "and",
@@ -412,6 +494,47 @@ STOPWORDS = {"sources", "source", "report", "reports", "the", "a", "an", "to", "
 
 def keywords(title: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", title.lower()) if w not in STOPWORDS and len(w) > 1}
+
+
+# Wörter, die bei fast jeder Meldung vorkommen und für den Duplikat-Vergleich nichts aussagen
+DEDUP_STOP = STOPWORDS | {
+    "2024", "2025", "2026", "2027", "2028", "esports", "season", "league", "legends", "lol", "valorant",
+    "vct", "team", "new", "year", "split", "official", "officially", "announces", "announced", "announce",
+    "sign", "signs", "signed", "signing", "join", "joins", "joined", "joining", "reportedly", "rumor",
+    "rumors", "according", "confirms", "confirmed", "after", "ahead", "update", "news", "exclusive",
+    "worlds", "msi", "masters", "champions", "stage", "week", "playoffs", "finals", "final", "semifinals",
+    "semifinal", "quarterfinals", "quarterfinal", "kickoff", "first", "stand", "match", "matches", "game",
+}
+
+
+def dedup_keywords(title: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", title.lower()) if w not in DEDUP_STOP and len(w) > 1}
+
+
+def is_duplicate(title: str, recent: list[dict]) -> str | None:
+    """Gibt den Titel einer schon geposteten Meldung zurück, wenn es dieselbe Story ist."""
+    kw = dedup_keywords(title)
+    if not kw:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.DEDUP_HOURS)
+    borderline = []
+    for r in recent:
+        ts = parse_date(r.get("ts"))
+        if ts and ts < cutoff:
+            continue
+        if norm_title(r["t"]) == norm_title(title):
+            return r["t"]
+        rk = dedup_keywords(r["t"])
+        common = kw & rk
+        smaller = min(len(kw), len(rk))
+        if smaller and len(common) >= min(3, smaller) and len(common) / smaller >= config.DEDUP_SIMILARITY:
+            return r["t"]
+        borderline.append((len(common), r["t"]))
+    # Grenzfälle (2 gleiche Namen, z. B. "G2" + "Perkz"): die KI fragen, höchstens 2 Mal pro Artikel
+    for n, other in sorted(borderline, reverse=True)[:2]:
+        if n >= 2 and ai_same_story(title, other):
+            return other
+    return None
 
 
 def find_other_source(item: dict) -> dict | None:
@@ -596,8 +719,18 @@ def find_image(names: list[str], game: dict) -> tuple[str | None, str]:
     return img, "neuestes Riot-Bild" if img else "nichts gefunden"
 
 
-def enrich(item: dict, game: dict | None = None, label: str = "") -> None:
-    """Holt Zusammenfassung, Bild und direkten Link zum Artikel."""
+def is_relevant(item: dict, text: str, game: dict) -> bool:
+    """Ohne KI: Passt der Artikel zum Spiel? (Stichwörter im Titel/Text oder bekannte Esports-Seite)"""
+    haystack = f"{item['title']} {text}".lower()
+    if any(k in haystack for k in game.get("relevance", [])):
+        return True
+    source = (item.get("source") or "").lower()
+    return any(s in source for s in config.ESPORTS_SOURCES) and not text
+
+
+def enrich(item: dict, game: dict | None = None, label: str = "", check: bool = False) -> None:
+    """Holt Zusammenfassung, Bild und direkten Link zum Artikel.
+    check=True: prüft zusätzlich, ob der Artikel überhaupt zum Spiel passt (setzt item['irrelevant'])."""
     url = item["url"]
     if "news.google.com" in url:
         url = resolve_google(url)
@@ -619,8 +752,17 @@ def enrich(item: dict, game: dict | None = None, label: str = "") -> None:
     if not item.get("image") and page["image"] and trusted:
         item["image"] = page["image"]
 
-    summary, subjects = ai_summary(item["title"], page["text"], item.get("source", ""))
+    ai = ai_summary(item["title"], page["text"], item.get("source", ""), game["name"] if (check and game) else "")
+    summary, subjects, ai_relevant = ai["summary"], ai["subjects"], ai["relevant"]
     used_ai = bool(summary)
+    if check and ai["category"]:
+        item["category"] = ai["category"]  # Kategorie nach Inhalt statt nach Titel
+    if check and game:
+        relevant = ai_relevant if ai_relevant is not None else is_relevant(item, page["text"], game)
+        if not relevant:
+            item["irrelevant"] = True
+            print(f"   🚫 Passt nicht zu {game['name']} ({'KI' if ai_relevant is not None else 'Stichwörter'})")
+            return
 
     # 2) Kein Bild -> passendes Bild suchen: Spieler, Team, Liga (lolesports, Wikipedia, Liquipedia),
     #    zuletzt eigenes Ersatzbild bzw. neuestes offizielles Riot-Bild
@@ -653,10 +795,17 @@ def has_word(title: str, words) -> bool:
 
 
 def label_for(src: dict, item: dict) -> str:
-    """Esports-Artikel über Spielerwechsel bekommen das Transfer-Label."""
-    if "Esports" in src["label"] and has_word(item["title"], config.TRANSFER_WORDS):
+    """Kategorie eines News-Artikels: nach KI-Einschätzung, sonst nach Wörtern im Titel."""
+    if src["type"] != "rss":
+        return src["label"]  # Patch-Notes, Riot-Esports, Ergebnisse: feste Kategorie
+    if item.get("category") == "TRANSFER":
         return config.TRANSFER_LABEL
-    return src["label"]
+    if item.get("category") == "ESPORTS":
+        return config.ESPORTS_LABEL
+    title = item["title"]
+    if has_word(title, config.TRANSFER_LABEL_WORDS) and not has_word(title, config.NOT_TRANSFER_WORDS):
+        return config.TRANSFER_LABEL
+    return config.ESPORTS_LABEL if src["label"] == config.TRANSFER_LABEL else src["label"]
 
 
 def post_to_discord(webhook: str, game: dict, src: dict, item: dict):
@@ -680,16 +829,27 @@ def post_to_discord(webhook: str, game: dict, src: dict, item: dict):
     send_embed(webhook, embed)
 
 
-def send_embed(webhook: str, embed: dict) -> None:
+def send_embed(webhook: str, embed: dict, wait: bool = False) -> dict | None:
+    """Postet ein Embed. Mit wait=True gibt Discord die Nachricht zurück (für die ID zum späteren Löschen)."""
     for _ in range(5):
-        r = requests.post(webhook, json={"embeds": [embed]}, timeout=30)
+        r = requests.post(webhook, json={"embeds": [embed]}, timeout=30, params={"wait": "true"} if wait else None)
         if r.status_code == 429:  # Rate-Limit: kurz warten und erneut versuchen
             time.sleep(float(r.json().get("retry_after", 2)) + 0.5)
             continue
         r.raise_for_status()
         time.sleep(1)
-        return
+        return r.json() if wait else None
     raise RuntimeError("Discord Rate-Limit dauerhaft überschritten")
+
+
+def delete_message(webhook: str, message_id: str) -> None:
+    """Löscht eine eigene Nachricht des Webhooks (z. B. den vorherigen Spielplan)."""
+    try:
+        r = requests.delete(f"{webhook.split('?')[0]}/messages/{message_id}", timeout=30)
+        if r.status_code not in (204, 404):  # 404 = schon gelöscht
+            print(f"   (alter Spielplan nicht löschbar: {r.status_code})")
+    except Exception as exc:
+        print(f"   (alter Spielplan nicht löschbar: {exc})")
 
 
 # ---------- Spielplan: Tagesübersicht & Erinnerungen ----------
@@ -705,11 +865,15 @@ def upcoming_lol(src: dict) -> list[dict]:
         if not start:
             continue
         bo = (match.get("strategy") or {}).get("count")
+        slug = (ev.get("league") or {}).get("slug", "")
         out.append({
             "id": f'lol-{match.get("id")}', "start": start,
             "t1": teams[0].get("name") or "TBD", "t2": teams[1].get("name") or "TBD",
             "event": (ev.get("league") or {}).get("name", ""), "stage": ev.get("blockName") or "",
             "bestof": f"Bo{bo}" if bo else "", "url": None,
+            "live": ev.get("state") == "inProgress",  # lolesports meldet selbst, wenn ein Match läuft
+            "minor": lol_is_minor(ev),
+            "watch": f"https://lolesports.com/live/{slug}" if slug else "https://lolesports.com",
         })
     return out
 
@@ -736,20 +900,24 @@ def upcoming_vlr(src: dict) -> list[dict]:
         if series_el:
             series_el.extract()
         event = ev_el.get_text(" ", strip=True) if ev_el else ""
-        if not any(k in event.lower() for k in src["events"]):
+        tier = vlr_tier(event, src)
+        if not tier:
             continue
         names = [t.get_text(" ", strip=True) for t in a.select(".match-item-vs-team-name")]
         eta = a.select_one(".ml-eta")
         eta_text = eta.get_text(" ", strip=True) if eta else ""
         if "ago" in eta_text.lower():  # schon gespielt
             continue
-        start = parse_in(eta_text)
+        status = a.select_one(".ml-status")
+        live = bool(status and "live" in status.get_text(" ", strip=True).lower()) or bool(a.select_one(".mod-live"))
+        start = datetime.now(timezone.utc) if live and not eta_text else parse_in(eta_text)
         if len(names) != 2 or not start:
             continue
+        url = urljoin(src["url"], a["href"])
         out.append({
             "id": "vlr-" + a["href"].split("/")[1], "start": start, "t1": names[0] or "TBD",
             "t2": names[1] or "TBD", "event": event, "stage": stage, "bestof": "",
-            "url": urljoin(src["url"], a["href"]),
+            "url": url, "live": live, "watch": url, "minor": tier == "minor",
         })
     return out
 
@@ -771,10 +939,8 @@ def match_line(m: dict) -> str:
     return f"<t:{ts}:t> {teams}" + (f" ({extra})" if extra else "")
 
 
-def handle_schedule(game: dict, game_state: dict, webhook: str | None, dry_run: bool) -> None:
-    """Tagesübersicht (einmal am Tag) und optional Erinnerungen kurz vor Matchbeginn."""
-    if not (config.DAILY_SCHEDULE or config.MATCH_REMINDERS):
-        return
+def handle_schedule(game: dict, game_state: dict, webhook: str | None, dry_run: bool) -> list[dict]:
+    """Stündlicher Spielplan und Benachrichtigung, wenn ein Match live geht."""
     matches = []
     for src in game["sources"]:
         if src["type"] in UPCOMING:
@@ -784,52 +950,70 @@ def handle_schedule(game: dict, game_state: dict, webhook: str | None, dry_run: 
                 print(f"❌ {game['name']} | Spielplan: {exc}")
     now = datetime.now(timezone.utc)
     matches.sort(key=lambda m: m["start"])
-    print(f"📅 {game['name']} | Spielplan: {len(matches)} kommende Matches gefunden")
+    print(f"📅 {game['name']} | Spielplan: {len(matches)} kommende Matches gefunden "
+          f"({sum(1 for m in matches if m.get('live'))} live)")
 
-    # Tagesübersicht: einmal pro Tag ab DAILY_SCHEDULE_HOUR, Matches der nächsten 24 Stunden
-    today = local_now().date().isoformat()
-    due = local_now().hour >= config.DAILY_SCHEDULE_HOUR and game_state.get("schedule_day") != today
-    if config.DAILY_SCHEDULE and (due or dry_run):
-        window = [m for m in matches if now - timedelta(minutes=30) <= m["start"] <= now + timedelta(hours=24)]
-        if window:
-            groups: dict = {}
-            for m in window:
+    # 1) Spielplan: jede Stunde neu (Matches der nächsten 24 Stunden), der vorherige Post wird gelöscht
+    local = local_now()
+    hour_key = local.strftime("%Y-%m-%d %H")
+    if config.SCHEDULE_EVERY_HOUR and (game_state.get("schedule_hour") != hour_key or dry_run):
+        live_now = [m for m in matches if m.get("live")]
+        window = [m for m in matches if not m.get("live")
+                  and now - timedelta(minutes=15) <= m["start"] <= now + timedelta(hours=config.SCHEDULE_WINDOW_HOURS)]
+        fields = []
+        if live_now:
+            fields.append({"name": "🔴 Live now", "inline": False, "value": "\n".join(
+                f"{m['event']}: **{m['t1']}** vs **{m['t2']}**" for m in live_now)[:1024]})
+        groups: dict = {}
+        for m in window:
+            if not m.get("minor"):
                 groups.setdefault(m["event"] or game["name"], []).append(match_line(m))
-            fields = [{"name": ev[:256], "value": "\n".join(lines)[:1024], "inline": False}
-                      for ev, lines in list(groups.items())[:25]]
-            embed = {"title": f"📅 Matches – {local_now().strftime('%A, %d %B')}"[:256], "color": game["color"],
-                     "author": {"name": f"🗓️ Schedule · {game['name']}"}, "fields": fields,
-                     "footer": {"text": "Times shown in your local time"}}
-            if dry_run:
-                print("   → Tagesübersicht (Vorschau):")
-                for f in fields:
-                    print(f"     {f['name']}: " + " | ".join(f["value"].splitlines()))
-            elif webhook:
-                send_embed(webhook, embed)
-        else:
-            print("   (keine Matches in den nächsten 24 Stunden – keine Tagesübersicht)")
-        if not dry_run and due:
-            game_state["schedule_day"] = today
+        fields += [{"name": ev[:256], "value": "\n".join(lines)[:1024], "inline": False}
+                   for ev, lines in list(groups.items())[:22]]
+        minor = [f"<t:{int(m['start'].timestamp())}:t> {m['event']}: {m['t1']} vs {m['t2']}"
+                 for m in window if m.get("minor")]
+        if minor:  # kleinere Ligen kompakt in einem Abschnitt
+            fields.append({"name": "Other leagues", "value": "\n".join(minor)[:1024], "inline": False})
 
-    # Erinnerungen kurz vor Matchbeginn
-    if config.MATCH_REMINDERS:
-        reminded = game_state.setdefault("reminded", [])
-        soon = [m for m in matches if now <= m["start"] <= now + timedelta(minutes=config.REMINDER_MINUTES)
-                and m["id"] not in reminded and "TBD" not in (m["t1"], m["t2"])]
-        for m in soon:
-            ts = int(m["start"].timestamp())
-            embed = {"title": f"{m['t1']} vs {m['t2']}"[:256], "color": game["color"],
-                     "author": {"name": f"🔴 Starting soon · {game['name']}"},
+        old_id = game_state.get("schedule_msg")
+        if dry_run:
+            print(f"   → Spielplan (Vorschau, stündlich): {len(fields)} Abschnitte")
+            for f in fields:
+                print(f"     {f['name']}: " + " | ".join(f["value"].splitlines()))
+        elif webhook:
+            if old_id and config.SCHEDULE_REPLACE_PREVIOUS:
+                delete_message(webhook, old_id)  # nur der neueste Spielplan bleibt im Kanal
+                game_state["schedule_msg"] = None
+            if fields:
+                embed = {"title": f"📅 Upcoming matches – next {config.SCHEDULE_WINDOW_HOURS} hours",
+                         "color": game["color"], "author": {"name": f"🗓️ Schedule · {game['name']}"},
+                         "fields": fields, "footer": {"text": "Times shown in your local time · updated"},
+                         "timestamp": now.isoformat()}
+                msg = send_embed(webhook, embed, wait=True)
+                game_state["schedule_msg"] = (msg or {}).get("id")
+            else:
+                print("   (keine Matches in den nächsten 24 Stunden – kein Spielplan-Post)")
+            game_state["schedule_hour"] = hour_key
+
+    # 2) Benachrichtigung, sobald ein Match live ist
+    if config.LIVE_NOTIFICATIONS:
+        notified = game_state.setdefault("live_notified", [])
+        live = [m for m in matches if m.get("live") and m["id"] not in notified and "TBD" not in (m["t1"], m["t2"])
+                and (not m.get("minor") or config.LIVE_NOTIFICATIONS_MINOR)]
+        for m in live:
+            embed = {"title": f"🔴 LIVE: {m['t1']} vs {m['t2']}"[:256], "color": game["color"],
+                     "author": {"name": f"🔴 Match started · {game['name']}"},
                      "description": " · ".join(x for x in (m["event"], m["stage"], m["bestof"]) if x)
-                                    + f"\nStart: <t:{ts}:t> (<t:{ts}:R>)"}
-            if m["url"]:
-                embed["url"] = m["url"]
+                                    + (f"\n[Watch live]({m['watch']})" if m.get("watch") else "")}
+            if m.get("watch"):
+                embed["url"] = m["watch"]
             if dry_run:
-                print(f"   → Erinnerung: {m['t1']} vs {m['t2']}")
+                print(f"   → LIVE-Benachrichtigung: {m['t1']} vs {m['t2']}")
             elif webhook:
                 send_embed(webhook, embed)
-                reminded.append(m["id"])
-        game_state["reminded"] = reminded[-200:]
+                notified.append(m["id"])
+        game_state["live_notified"] = notified[-300:]
+    return matches
 
 
 # ---------- Ablauf ----------
@@ -847,10 +1031,13 @@ def main(dry_run: bool = False) -> int:
             continue
         game_state = state.setdefault(key, {"titles": []})
         seen_titles = set(game_state["titles"])
+        recent = game_state.setdefault("recent", [])  # zuletzt gepostete Titel (für Duplikat-Prüfung)
 
         for src in game["sources"]:
             seen = game_state.setdefault(src["url"], [])
             first_run = not seen
+            if dry_run and src["type"] == "lolesports":
+                src = {**src, "_debug": True}  # im Test-Modus alle verfügbaren Ligen anzeigen
             try:
                 items = FETCHERS[src["type"]](src)
             except Exception as exc:
@@ -875,9 +1062,30 @@ def main(dry_run: bool = False) -> int:
             print(f"✅ {game['name']} | {src['label']} | {src['url'][:70]}: "
                   f"{len(items)} gefunden, {len(to_post)} neu")
 
+            minor_results = [i for i in to_post if i.get("is_result") and i.get("minor")]
+            to_post = [i for i in to_post if not (i.get("is_result") and i.get("minor"))]
+            if minor_results:  # kleinere Ligen: alle Ergebnisse gesammelt in einem kompakten Post
+                lines = [i["short"] for i in minor_results][:20]
+                embed = {"title": "📊 Other results", "description": "\n".join(lines)[:4000],
+                         "color": game["color"], "author": {"name": f"📊 Results · {game['name']}"}}
+                if dry_run:
+                    print("   → Kompakter Ergebnis-Post: " + " | ".join(lines))
+                else:
+                    try:
+                        send_embed(webhook, embed)
+                    except Exception as exc:
+                        errors += 1
+                        print(f"❌ Posten fehlgeschlagen: {exc}")
+
             for item in to_post:
                 if not item.get("is_result"):
-                    enrich(item, game, label_for(src, item))
+                    dup = is_duplicate(item["title"], recent)
+                    if dup:  # dieselbe Story wurde (mit anderem Titel) schon gepostet
+                        print(f"   ⏭️ Duplikat übersprungen: {item['title']}\n      (schon gepostet: {dup})")
+                        continue
+                    enrich(item, game, label_for(src, item), check=src["type"] == "rss")
+                    if item.get("irrelevant"):
+                        continue
                 elif not item.get("thumbnail") and config.FALLBACK_IMAGES and not config.SPOILER_RESULTS:
                     # z. B. Valorant (vlr.gg liefert keine Logos): Logo des Siegers suchen
                     img, origin = find_image([item["winner"]] if item.get("winner") else [], game)
@@ -888,6 +1096,7 @@ def main(dry_run: bool = False) -> int:
                     print(f"   → [{label_for(src, item)}] {item['title']}  ({extra})")
                     if item["summary"] and not item.get("is_result"):
                         print(f"     📝 {item['summary']}")
+                        recent.append({"t": item["title"], "ts": datetime.now(timezone.utc).isoformat()})
                     continue
                 try:
                     target = webhook
@@ -900,11 +1109,13 @@ def main(dry_run: bool = False) -> int:
                     break
                 if not item.get("is_result"):
                     seen_titles.add(norm_title(item["title"]))
+                    recent.append({"t": item["title"], "ts": datetime.now(timezone.utc).isoformat()})
 
             # Alles Gefundene als gesehen markieren (auch Übersprungenes)
             ids = [i["id"] for i in items if i["id"]]
             game_state[src["url"]] = (ids + [s for s in seen if s not in ids])[:SEEN_LIMIT]
         game_state["titles"] = list(seen_titles)[-SEEN_LIMIT:]
+        game_state["recent"] = recent[-300:]
         handle_schedule(game, game_state, webhook, dry_run)
 
     if not dry_run:
@@ -933,7 +1144,8 @@ def test_ai() -> int:
                 continue
             item = max(items, key=lambda i: i["date"] or datetime.min.replace(tzinfo=timezone.utc))
             print(f"\n🧪 {game['name']} | {label_for(src, item)} | {item['title']}")
-            enrich(item, game, label_for(src, item))
+            enrich(item, game, label_for(src, item), check=True)
+            print(f"   Kategorie: {label_for(src, item)}")
             print(f"   Link: {item['url']}")
             print(f"   Bild: {item.get('image')}")
             print(f"   Text: {item['summary'] or '-'}")
