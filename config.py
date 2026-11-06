@@ -75,7 +75,9 @@ GAMES = {
              "leagues": ["worlds", "msi", "first stand", "lck", "lpl", "lec", "lcs",
                          "lta north", "lta south", "lta n", "lta s", "lta cross", "lta"],
              # Kleinere Ligen: Ergebnisse gesammelt in einem kurzen Post, im Spielplan unter "Other leagues"
-             "leagues_minor": ["lcp", "cblol", "emea masters", "prime league", "primeleague"]},
+             "leagues_minor": ["lcp", "cblol", "emea masters", "prime league", "primeleague"],
+             # nie dabei (z. B. Auf-/Abstiegsturniere)
+             "leagues_exclude": ["promotion"]},
         ],
     },
     "valo": {

@@ -165,6 +165,8 @@ def _norm(x: str) -> str:
 def league_tier(slug: str, name: str, src: dict) -> str | None:
     """'major' (volle Darstellung), 'minor' (kompakt) oder None (ignorieren)."""
     s, n = _norm(slug), _norm(name)
+    if any(x in s or x in n for x in map(_norm, src.get("leagues_exclude", []))):
+        return None
     if any(k in (s, n) for k in map(_norm, src.get("leagues", []))):
         return "major"
     if any(s.startswith(k) or n.startswith(k) for k in map(_norm, src.get("leagues_minor", []))):
@@ -879,12 +881,13 @@ def upcoming_lol(src: dict) -> list[dict]:
 
 
 def parse_in(text: str) -> datetime | None:
-    """'2h 30m' (bis Matchbeginn) -> Zeitpunkt."""
+    """'2h 30m' (bis Matchbeginn) -> Zeitpunkt, auf 5 Minuten gerundet (18:59 -> 19:00)."""
     units = {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
     parts = re.findall(r"(\d+)\s*([wdhms])", text or "")
     if not parts:
         return None
-    return datetime.now(timezone.utc) + timedelta(seconds=sum(int(n) * units[u] for n, u in parts))
+    ts = datetime.now(timezone.utc).timestamp() + sum(int(n) * units[u] for n, u in parts)
+    return datetime.fromtimestamp(round(ts / 300) * 300, timezone.utc)
 
 
 def upcoming_vlr(src: dict) -> list[dict]:
