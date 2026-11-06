@@ -50,4 +50,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state.json
-          git diff --cached --quiet || (git commit -m "News-Status aktualisiert [skip ci]" && git push)
+          git diff --cached --quiet && exit 0
+          git commit -m "News-Status aktualisiert [skip ci]"
+          # Falls inzwischen jemand Dateien hochgeladen hat: neuesten Stand holen und erneut versuchen
+          for i in 1 2 3 4 5; do
+            git pull --rebase -X theirs origin main && git push && exit 0
+            sleep $((i * 5))
+          done
+          echo "::error::Status konnte nicht gespeichert werden"
+          exit 1
